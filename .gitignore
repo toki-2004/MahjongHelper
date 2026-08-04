@@ -1,18 +1,26 @@
-# Python 缓存
+# Python 编译缓存
 __pycache__/
 *.pyc
 *.pyo
 
+# PyInstaller 打包生成
+build/
+dist/
+*.spec
+
 # 调试输出
 debug_output/
 
-# 个人配置（包含屏幕坐标等隐私信息）
+# 用户配置文件（含隐私信息）
 config.json
+
+# 日志文件
+*.log
+
+# 编辑器/IDE 目录
+.vscode/
+.idea/
 
 # 虚拟环境
 venv/
 env/
-
-# IDE
-.vscode/
-.idea/

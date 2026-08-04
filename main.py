@@ -1,4 +1,5 @@
 import sys
+import os
 import json
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
@@ -8,11 +9,36 @@ import numpy as np
 import mss
 import keyboard
 
-from vision import recognize_tiles_from_image, get_tile_name
-from logic import decide_discard
-from template_manager import update_template
+# ========== 资源路径适配 ==========
+def resource_path(relative_path):
+    """获取资源的绝对路径，兼容开发环境和 PyInstaller 打包后的 exe"""
+    try:
+        # PyInstaller 会将资源临时解压到 _MEIPASS 目录
+        base_path = sys._MEIPASS
+    except AttributeError:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
 
-CONFIG_FILE = "config.json"
+# 配置文件（用户配置，保存在 exe 同级目录）
+CONFIG_FILE = os.path.join(os.getcwd(), "config.json")
+
+# 模板目录（打包时会放入 _MEIPASS）
+TEMPLATE_PATH = resource_path("templates")
+# ==================================
+
+# 更新 template_manager 中的全局变量，使其使用打包后的路径
+# 但由于 template_manager 自己会读取 TEMPLATE_PATH，我们需在导入前设置环境变量或修改模块
+# 简单起见，我们直接修改 template_manager 的 TEMPLATE_PATH 属性
+import template_manager
+template_manager.TEMPLATE_PATH = TEMPLATE_PATH
+# 重新加载模板
+from template_manager import load_templates, templates, ID_TO_SUIT_VAL, get_tile_name, update_template
+templates = load_templates()  # 确保加载新路径
+
+from vision import recognize_tiles_from_image, get_tile_name as vision_get_name
+from logic import decide_discard
+
+# ========== 以下为原 main.py 内容，仅修改了资源路径引用 ==========
 
 # ------------------ 框选覆盖层 ------------------
 class SelectionOverlay(QWidget):
@@ -97,7 +123,7 @@ class SelectionOverlay(QWidget):
         self.selection_done.emit(0, 0, 0, 0)
 
 
-# ------------------ 结果覆盖层（移除绿框和背景，只显示标签和下拉栏） ------------------
+# ------------------ 结果覆盖层 ------------------
 class ResultOverlay(QWidget):
     def __init__(self, screen_x, screen_y, region_w, region_h, helper=None):
         margin = 20
