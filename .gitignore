@@ -1,0 +1,18 @@
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+
+# 调试输出
+debug_output/
+
+# 个人配置（包含屏幕坐标等隐私信息）
+config.json
+
+# 虚拟环境
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
