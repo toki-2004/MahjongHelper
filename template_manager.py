@@ -32,15 +32,21 @@ def load_templates():
             else:
                 print(f"警告：{path} 读取失败")
         else:
-            # 如果模板不存在，生成一个占位（纯白背景）
+            # 模板不存在时仅使用内存占位并警告，不写入磁盘，
+            # 避免在任意工作目录生成垃圾模板文件
             placeholder = np.ones((70, 50), dtype=np.uint8) * 255
-            cv2.imwrite(path, placeholder)
             templates.append((i, placeholder))
             print(f"生成占位模板：{i}.png")
+    rebuild_template_matrix(templates)
     return templates
 
-def _build_template_matrix(tpl_list):
+def rebuild_template_matrix(tpl_list=None):
     """预计算模板的归一化向量矩阵，用于快速相关匹配（等价于 TM_CCOEFF_NORMED）。"""
+    global TEMPLATE_MATRIX, TEMPLATE_SIZE
+    if tpl_list is None:
+        tpl_list = templates
+    if not tpl_list:
+        return
     size = tpl_list[0][1].shape
     rows = []
     for _, tpl in tpl_list:
@@ -48,7 +54,8 @@ def _build_template_matrix(tpl_list):
         vec = vec - vec.mean()
         n = np.linalg.norm(vec)
         rows.append(vec / n if n > 1e-6 else np.zeros_like(vec))
-    return np.array(rows, dtype=np.float32), size
+    TEMPLATE_MATRIX = np.array(rows, dtype=np.float32)
+    TEMPLATE_SIZE = size
 
 # 更新单个模板（在线融合）
 def update_template(tile_id, roi_gray, merge_ratio=0.3):
@@ -70,9 +77,8 @@ def update_template(tile_id, roi_gray, merge_ratio=0.3):
         new = roi_gray
     cv2.imwrite(path, new)
     # 重新加载整个模板列表（或只更新内存中的）
-    global templates, TEMPLATE_MATRIX, TEMPLATE_SIZE
+    global templates
     templates = load_templates()
-    TEMPLATE_MATRIX, TEMPLATE_SIZE = _build_template_matrix(templates)
     return True
 
 # 获取牌名（用于显示）
@@ -89,4 +95,3 @@ def get_tile_name(tile_id):
 
 # 全局模板变量（供vision模块使用）
 templates = load_templates()
-TEMPLATE_MATRIX, TEMPLATE_SIZE = _build_template_matrix(templates)

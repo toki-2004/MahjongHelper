@@ -20,6 +20,9 @@ def match_template_with_scores(roi):
     vec = roi_resized.astype(np.float32).reshape(-1)
     vec = vec - vec.mean()
     norm = np.linalg.norm(vec)
+    # 防御：矩阵与当前模板尺寸不一致时重建
+    if tm.TEMPLATE_MATRIX is None or tm.TEMPLATE_MATRIX.shape[1] != vec.shape[0]:
+        tm.rebuild_template_matrix()
     if norm < 1e-6:
         return [(tid, 0.0) for tid in range(len(tm.TEMPLATE_MATRIX))]
     scores = (tm.TEMPLATE_MATRIX @ vec) / norm
