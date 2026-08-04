@@ -97,100 +97,92 @@ class SelectionOverlay(QWidget):
         self.selection_done.emit(0, 0, 0, 0)
 
 
-# ------------------ 结果覆盖层 ------------------
+# ------------------ 结果覆盖层（移除绿框和背景，只显示标签和下拉栏） ------------------
 class ResultOverlay(QWidget):
     def __init__(self, screen_x, screen_y, region_w, region_h, helper=None):
-        margin = 50
+        margin = 20  # 减小外边距，因为不需要背景
         self.margin = margin
         self.screen_x = screen_x
         self.screen_y = screen_y
         super().__init__(None)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
+        # 窗口自身透传
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self.setMouseTracking(True)
         self.setGeometry(screen_x - margin, screen_y - margin,
                          region_w + 2*margin, region_h + 2*margin)
 
         self.tile_ids = []
         self.boxes = []
-        self.background_color = QColor(0, 0, 0, 100)
         self.helper = helper
+        self.tile_names = [f"{i} {get_tile_name(i)}" for i in range(34)]
+
+        # 存储子控件列表，便于更新时清除
+        self.label_list = []
+        self.combo_list = []
 
     def update_result(self, tile_ids, boxes):
+        # 清除旧控件
+        for lbl in self.label_list:
+            lbl.deleteLater()
+        for cb in self.combo_list:
+            cb.deleteLater()
+        self.label_list.clear()
+        self.combo_list.clear()
+
         self.tile_ids = tile_ids
         self.boxes = boxes
-        self.update()
 
-    def paintEvent(self, event):
-        if not self.tile_ids:
-            return
+        # 为每张牌创建标签和下拉栏
+        for i, (bx, by, bw, bh) in enumerate(boxes):
+            if i >= len(tile_ids):
+                break
+            # 牌名标签：放在牌的下方
+            lbl = QLabel(self)
+            lbl.setText(get_tile_name(tile_ids[i]))
+            lbl.setStyleSheet("color: white; background-color: rgba(0,0,0,150); font-weight: bold; padding: 2px;")
+            lbl.setAlignment(Qt.AlignCenter)
+            # 位置：牌下方
+            lbl_x = bx + self.margin
+            lbl_y = by + self.margin + bh + 2
+            lbl_w = bw
+            lbl_h = 20
+            lbl.setGeometry(lbl_x, lbl_y, lbl_w, lbl_h)
+            # 标签透传鼠标
+            lbl.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            lbl.show()
+            self.label_list.append(lbl)
 
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.fillRect(self.rect(), self.background_color)
+            # 下拉栏：放在牌的上方
+            cb = QComboBox(self)
+            cb.addItems(self.tile_names)
+            cb.setGeometry(bx + self.margin, by + self.margin - 25, bw, 22)
+            # 下拉栏可交互
+            cb.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+            cb.currentIndexChanged.connect(lambda idx, i=i: self.on_combo_changed(i, idx))
+            cb.show()
+            self.combo_list.append(cb)
 
-        for i, (bx, by, bw, bh) in enumerate(self.boxes):
-            if i < len(self.tile_ids):
-                rx = bx + self.margin
-                ry = by + self.margin
-                pen = QPen(QColor(0, 255, 0), 2)
-                painter.setPen(pen)
-                painter.drawRect(rx, ry, bw, bh)
+        # 不需要绘制任何内容，所以不调用 update() 也无妨
 
-                name = get_tile_name(self.tile_ids[i])
-                painter.setPen(QPen(Qt.white, 1))
-                font = QFont("Arial", 12, QFont.Bold)
-                painter.setFont(font)
-                painter.drawText(rx + 2, ry - 5, name)
-
-        if self.tile_ids:
-            best_idx, score = decide_discard(self.tile_ids)
-            if best_idx != -1:
-                best_tile = get_tile_name(self.tile_ids[best_idx])
-                text = f"建议打出：{best_tile}  (得分:{score})"
-                painter.setPen(Qt.NoPen)
-                painter.setBrush(QColor(0, 0, 0, 200))
-                rect = QRect(self.width() - 300, 10, 280, 40)
-                painter.drawRoundedRect(rect, 8, 8)
-                painter.setPen(QPen(QColor(0, 255, 100), 1))
-                font = QFont("Arial", 14, QFont.Bold)
-                painter.setFont(font)
-                painter.drawText(rect, Qt.AlignCenter, text)
-
-    def mousePressEvent(self, event):
-        # 只有交互模式启用时才处理右键纠错，否则忽略所有事件
-        if event.button() == Qt.RightButton and self.helper and self.helper.interactive_enabled:
-            pos = event.pos()
-            for i, (bx, by, bw, bh) in enumerate(self.boxes):
-                rx = bx + self.margin
-                ry = by + self.margin
-                if rx <= pos.x() <= rx + bw and ry <= pos.y() <= ry + bh:
-                    self.correct_tile(i)
-                    break
-        else:
-            # 非交互模式或非右键，忽略事件（实现透传）
-            event.ignore()
-
-    def correct_tile(self, index):
+    def on_combo_changed(self, index, selected_index):
         if index >= len(self.tile_ids):
             return
-        if self.helper is None:
-            QMessageBox.information(self, "提示", "无法获取图像数据。")
+        if selected_index < 0:
             return
+        correct_id = selected_index
         gray_roi = self.helper.current_rois.get(index)
         if gray_roi is None:
             QMessageBox.information(self, "提示", "该牌的图像数据不存在，请重新识别。")
             return
-
-        items = [f"{i} {get_tile_name(i)}" for i in range(34)]
-        item, ok = QInputDialog.getItem(self, "修正模板", "选择正确的牌：", items, 0, False)
-        if ok:
-            correct_id = int(item.split()[0])
-            success = update_template(correct_id, gray_roi, merge_ratio=0.3)
-            if success:
-                QMessageBox.information(self, "成功", "模板已更新！下次识别将生效。")
-            else:
-                QMessageBox.warning(self, "失败", "模板更新失败。")
+        success = update_template(correct_id, gray_roi, merge_ratio=0.3)
+        if success:
+            QMessageBox.information(self, "成功", f"模板 {get_tile_name(correct_id)} 已更新！")
+            if self.helper and self.helper.capture_region:
+                self.helper.capture_and_recognize(self.helper.capture_region)
+        else:
+            QMessageBox.warning(self, "失败", "模板更新失败。")
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
@@ -236,14 +228,13 @@ class SettingDialog(QDialog):
         return config
 
 
-# ------------------ 主UI窗口（左键托盘弹出） ------------------
+# ------------------ 主UI窗口（普通窗口） ------------------
 class MainUI(QWidget):
     def __init__(self, helper):
         super().__init__()
         self.helper = helper
         self.setWindowTitle("麻将辅助 - 识别结果")
         self.setMinimumSize(400, 350)
-        self.setWindowFlags(Qt.WindowStaysOnTopHint)
 
         layout = QVBoxLayout()
 
@@ -265,11 +256,6 @@ class MainUI(QWidget):
         self.setting_btn = QPushButton("打开设置")
         self.setting_btn.clicked.connect(self.open_setting)
 
-        # 交互开关
-        self.interact_check = QCheckBox("覆盖层交互（右键纠错）")
-        self.interact_check.setChecked(self.helper.interactive_enabled)
-        self.interact_check.stateChanged.connect(self.toggle_interact)
-
         layout.addWidget(self.hand_label)
         layout.addWidget(self.hand_display)
         layout.addWidget(self.suggestion_label)
@@ -277,14 +263,9 @@ class MainUI(QWidget):
         layout.addWidget(self.status_label)
         layout.addWidget(self.refresh_btn)
         layout.addWidget(self.setting_btn)
-        layout.addWidget(self.interact_check)
 
         self.setLayout(layout)
         self.update_display()
-
-    def toggle_interact(self, state):
-        enabled = (state == Qt.Checked)
-        self.helper.set_overlay_interactive(enabled)
 
     def update_display(self):
         ids = self.helper.current_ids
@@ -336,9 +317,6 @@ class MahjongHelper(QObject):
         self.current_rois = {}
         self.main_ui = None
 
-        # 默认开启交互
-        self.interactive_enabled = True
-
         self.setup_tray()
 
         try:
@@ -349,7 +327,8 @@ class MahjongHelper(QObject):
         except Exception as e:
             print(f"热键注册失败: {e}，请以管理员身份运行。")
 
-        # 启动时不进入框选模式
+        # 启动时自动弹出后台UI
+        QTimer.singleShot(200, self.show_main_ui)
 
     def load_config(self):
         try:
@@ -399,8 +378,6 @@ class MahjongHelper(QObject):
         else:
             self.main_ui.show()
             self.main_ui.update_display()
-            # 同步复选框状态
-            self.main_ui.interact_check.setChecked(self.interactive_enabled)
 
     def show_setting(self):
         dialog = SettingDialog()
@@ -467,23 +444,7 @@ class MahjongHelper(QObject):
         if self.is_auto:
             self.timer.start(self.timer.interval())
 
-    def set_overlay_interactive(self, enabled):
-        self.interactive_enabled = enabled
-        if self.result_overlay:
-            if enabled:
-                # 启用交互：移除透传属性，窗口可接收鼠标事件
-                self.result_overlay.setAttribute(Qt.WA_TransparentForMouseEvents, False)
-            else:
-                # 禁用交互：设置透传属性，所有鼠标事件穿透
-                self.result_overlay.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-            # 强制刷新
-            self.result_overlay.setWindowFlags(self.result_overlay.windowFlags())
-            self.result_overlay.show()
-        if self.main_ui and self.main_ui.isVisible():
-            self.main_ui.interact_check.setChecked(enabled)
-
     def capture_and_recognize(self, region):
-        # 先隐藏覆盖层，避免干扰截图
         if self.result_overlay and self.result_overlay.isVisible():
             self.result_overlay.hide()
 
@@ -500,7 +461,6 @@ class MahjongHelper(QObject):
             self.current_boxes = boxes
             self.current_debug_img = debug_img
 
-            # 存储 ROI
             self.current_rois = {}
             for i, (bx, by, bw, bh) in enumerate(boxes):
                 if i < len(ids):
@@ -524,13 +484,11 @@ class MahjongHelper(QObject):
         if self.result_overlay is None:
             self.result_overlay = ResultOverlay(screen_x, screen_y, region_w, region_h, helper=self)
         else:
-            self.result_overlay.setGeometry(screen_x - 50, screen_y - 50,
-                                            region_w + 100, region_h + 100)
+            self.result_overlay.setGeometry(screen_x - 20, screen_y - 20,
+                                            region_w + 40, region_h + 40)
             self.result_overlay.screen_x = screen_x
             self.result_overlay.screen_y = screen_y
-            self.result_overlay.margin = 50
-        # 应用当前交互模式
-        self.set_overlay_interactive(self.interactive_enabled)
+            self.result_overlay.margin = 20
         self.result_overlay.show()
         self.result_overlay.update_result(ids, boxes)
 
