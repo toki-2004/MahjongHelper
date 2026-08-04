@@ -84,6 +84,8 @@ def calculate_score(tile_ids):
     suits = [[0] * 9 for _ in range(3)]
     honors = [0] * 7
     for t in tile_ids:
+        if t < 0:
+            continue  # 未识别占位，不计分
         if t <= 8:
             suits[0][t] += 1
         elif t <= 17:

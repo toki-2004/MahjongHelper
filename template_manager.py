@@ -39,6 +39,17 @@ def load_templates():
             print(f"生成占位模板：{i}.png")
     return templates
 
+def _build_template_matrix(tpl_list):
+    """预计算模板的归一化向量矩阵，用于快速相关匹配（等价于 TM_CCOEFF_NORMED）。"""
+    size = tpl_list[0][1].shape
+    rows = []
+    for _, tpl in tpl_list:
+        vec = tpl.astype(np.float32).reshape(-1)
+        vec = vec - vec.mean()
+        n = np.linalg.norm(vec)
+        rows.append(vec / n if n > 1e-6 else np.zeros_like(vec))
+    return np.array(rows, dtype=np.float32), size
+
 # 更新单个模板（在线融合）
 def update_template(tile_id, roi_gray, merge_ratio=0.3):
     """
@@ -59,12 +70,15 @@ def update_template(tile_id, roi_gray, merge_ratio=0.3):
         new = roi_gray
     cv2.imwrite(path, new)
     # 重新加载整个模板列表（或只更新内存中的）
-    global templates
+    global templates, TEMPLATE_MATRIX, TEMPLATE_SIZE
     templates = load_templates()
+    TEMPLATE_MATRIX, TEMPLATE_SIZE = _build_template_matrix(templates)
     return True
 
 # 获取牌名（用于显示）
 def get_tile_name(tile_id):
+    if tile_id < 0:
+        return '?'
     suit, val = ID_TO_SUIT_VAL.get(tile_id, (3, 0))
     suit_map = {0: 'w', 1: 's', 2: 'p', 3: ''}
     if suit == 3:
@@ -75,3 +89,4 @@ def get_tile_name(tile_id):
 
 # 全局模板变量（供vision模块使用）
 templates = load_templates()
+TEMPLATE_MATRIX, TEMPLATE_SIZE = _build_template_matrix(templates)

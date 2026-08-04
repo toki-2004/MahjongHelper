@@ -511,6 +511,9 @@ class MahjongHelper(QObject):
         if self.result_overlay and self.result_overlay.isVisible():
             self.result_overlay.hide()
         logger.info(f"开始识别区域: {region}")
+        if self.rec_thread and self.rec_thread.isRunning():
+            logger.info("上一轮识别尚未完成，跳过本次")
+            return
         self.rec_thread = RecognizeThread(region)
         self.rec_thread.result_ready.connect(self.on_recognition_done)
         self.rec_thread.start()
