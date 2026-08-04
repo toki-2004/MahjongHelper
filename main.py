@@ -1,6 +1,8 @@
 import sys
 import os
 import json
+import logging
+import time
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
 from PyQt5.QtGui import *
@@ -9,38 +11,83 @@ import numpy as np
 import mss
 import keyboard
 
+# ========== 日志配置 ==========
+LOG_FILE = os.path.join(os.getcwd(), "mahjong_helper.log")
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_FILE, encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
 # ========== 资源路径适配 ==========
 def resource_path(relative_path):
-    """获取资源的绝对路径，兼容开发环境和 PyInstaller 打包后的 exe"""
     try:
-        # PyInstaller 会将资源临时解压到 _MEIPASS 目录
         base_path = sys._MEIPASS
     except AttributeError:
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
 
-# 配置文件（用户配置，保存在 exe 同级目录）
 CONFIG_FILE = os.path.join(os.getcwd(), "config.json")
-
-# 模板目录（打包时会放入 _MEIPASS）
 TEMPLATE_PATH = resource_path("templates")
-# ==================================
 
-# 更新 template_manager 中的全局变量，使其使用打包后的路径
-# 但由于 template_manager 自己会读取 TEMPLATE_PATH，我们需在导入前设置环境变量或修改模块
-# 简单起见，我们直接修改 template_manager 的 TEMPLATE_PATH 属性
+# 修改 template_manager 的模板路径
 import template_manager
 template_manager.TEMPLATE_PATH = TEMPLATE_PATH
-# 重新加载模板
 from template_manager import load_templates, templates, ID_TO_SUIT_VAL, get_tile_name, update_template
-templates = load_templates()  # 确保加载新路径
+logger.info(f"模板路径: {TEMPLATE_PATH}")
+templates = load_templates()
+logger.info(f"模板加载完成，共 {len(templates)} 张")
 
-from vision import recognize_tiles_from_image, get_tile_name as vision_get_name
+from vision import recognize_tiles_from_image
 from logic import decide_discard
 
-# ========== 以下为原 main.py 内容，仅修改了资源路径引用 ==========
 
-# ------------------ 框选覆盖层 ------------------
+# ================== 识别线程 ==================
+class RecognizeThread(QThread):
+    result_ready = pyqtSignal(list, list, np.ndarray, dict)  # ids, boxes, debug_img, rois
+
+    def __init__(self, region):
+        super().__init__()
+        self.region = region
+        self.sct = mss.MSS()
+
+    def run(self):
+        logger.info("识别线程启动")
+        start_time = time.time()
+        try:
+            x, y, w, h = self.region
+            monitor = {"left": x, "top": y, "width": w, "height": h}
+            img = self.sct.grab(monitor)
+            img_np = np.array(img)
+            img_bgr = cv2.cvtColor(img_np, cv2.COLOR_BGRA2BGR)
+            logger.info(f"截图完成，尺寸: {img_bgr.shape}")
+
+            ids, boxes, debug_img = recognize_tiles_from_image(img_bgr)
+            logger.info(f"识别完成，得到 {len(ids)} 张牌")
+
+            # 提取 ROI
+            rois = {}
+            for i, (bx, by, bw, bh) in enumerate(boxes):
+                if i < len(ids):
+                    roi = img_bgr[by:by+bh, bx:bx+bw]
+                    if roi.size > 0:
+                        gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+                        rois[i] = gray_roi
+
+            elapsed = time.time() - start_time
+            logger.info(f"识别总耗时: {elapsed:.2f}秒")
+            self.result_ready.emit(ids, boxes, debug_img, rois)
+
+        except Exception as e:
+            logger.error(f"识别错误: {e}", exc_info=True)
+            self.result_ready.emit([], [], None, {})
+
+
+# ================== 界面类 ==================
 class SelectionOverlay(QWidget):
     selection_done = pyqtSignal(int, int, int, int)
 
@@ -123,7 +170,6 @@ class SelectionOverlay(QWidget):
         self.selection_done.emit(0, 0, 0, 0)
 
 
-# ------------------ 结果覆盖层 ------------------
 class ResultOverlay(QWidget):
     def __init__(self, screen_x, screen_y, region_w, region_h, helper=None):
         margin = 20
@@ -147,7 +193,6 @@ class ResultOverlay(QWidget):
         self.combo_list = []
 
     def update_result(self, tile_ids, boxes):
-        # 清除旧控件
         for lbl in self.label_list:
             lbl.deleteLater()
         for cb in self.combo_list:
@@ -158,14 +203,12 @@ class ResultOverlay(QWidget):
         self.tile_ids = tile_ids
         self.boxes = boxes
 
-        # 获取建议打出牌的索引
         best_idx, _ = decide_discard(tile_ids) if tile_ids else (-1, -1)
 
         for i, (bx, by, bw, bh) in enumerate(boxes):
             if i >= len(tile_ids):
                 break
 
-            # ----- 牌名标签（根据是否建议打出设置颜色） -----
             lbl = QLabel(self)
             lbl.setText(get_tile_name(tile_ids[i]))
             if i == best_idx:
@@ -182,7 +225,6 @@ class ResultOverlay(QWidget):
             lbl.show()
             self.label_list.append(lbl)
 
-            # ----- 下拉栏（放在牌上方） -----
             cb = QComboBox(self)
             cb.addItems(self.tile_names)
             cb.setGeometry(bx + self.margin, by + self.margin - 25, bw, 22)
@@ -214,7 +256,6 @@ class ResultOverlay(QWidget):
             self.close()
 
 
-# ------------------ 设置对话框 ------------------
 class SettingDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -253,7 +294,6 @@ class SettingDialog(QDialog):
         return config
 
 
-# ------------------ 主UI窗口（普通窗口） ------------------
 class MainUI(QWidget):
     def __init__(self, helper):
         super().__init__()
@@ -324,7 +364,6 @@ class MainUI(QWidget):
         event.ignore()
 
 
-# ------------------ 主控制器 ------------------
 class MahjongHelper(QObject):
     def __init__(self):
         super().__init__()
@@ -341,6 +380,7 @@ class MahjongHelper(QObject):
         self.current_debug_img = None
         self.current_rois = {}
         self.main_ui = None
+        self.rec_thread = None
 
         self.setup_tray()
 
@@ -348,9 +388,9 @@ class MahjongHelper(QObject):
             keyboard.add_hotkey('F2', lambda: QTimer.singleShot(0, self.start_selection))
             keyboard.add_hotkey('esc', lambda: QTimer.singleShot(0, self.cancel_selection))
             keyboard.add_hotkey('F1', lambda: QTimer.singleShot(0, self.refresh_recognition))
-            print("全局热键注册成功：F2-框选，F1-刷新，ESC-取消。")
+            logger.info("全局热键注册成功：F2-框选，F1-刷新，ESC-取消。")
         except Exception as e:
-            print(f"热键注册失败: {e}，请以管理员身份运行。")
+            logger.error(f"热键注册失败: {e}，请以管理员身份运行。")
 
         QTimer.singleShot(200, self.show_main_ui)
 
@@ -471,38 +511,24 @@ class MahjongHelper(QObject):
     def capture_and_recognize(self, region):
         if self.result_overlay and self.result_overlay.isVisible():
             self.result_overlay.hide()
+        logger.info(f"开始识别区域: {region}")
+        self.rec_thread = RecognizeThread(region)
+        self.rec_thread.result_ready.connect(self.on_recognition_done)
+        self.rec_thread.start()
 
-        try:
-            x, y, w, h = region
-            monitor = {"left": x, "top": y, "width": w, "height": h}
-            img = self.sct.grab(monitor)
-            img_np = np.array(img)
-            img_bgr = cv2.cvtColor(img_np, cv2.COLOR_BGRA2BGR)
+    def on_recognition_done(self, ids, boxes, debug_img, rois):
+        logger.info(f"收到识别结果，牌数: {len(ids)}")
+        self.current_ids = ids
+        self.current_boxes = boxes
+        self.current_debug_img = debug_img
+        self.current_rois = rois
 
-            ids, boxes, debug_img = recognize_tiles_from_image(img_bgr)
-
-            self.current_ids = ids
-            self.current_boxes = boxes
-            self.current_debug_img = debug_img
-
-            self.current_rois = {}
-            for i, (bx, by, bw, bh) in enumerate(boxes):
-                if i < len(ids):
-                    roi = img_bgr[by:by+bh, bx:bx+bw]
-                    if roi.size > 0:
-                        gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-                        self.current_rois[i] = gray_roi
-
+        if self.capture_region:
+            x, y, w, h = self.capture_region
             self.show_result_overlay(x, y, w, h, ids, boxes)
 
-            if self.main_ui and self.main_ui.isVisible():
-                self.main_ui.update_display()
-
-        except Exception as e:
-            print(f"识别错误: {e}")
-            self.tray.showMessage("识别错误", str(e))
-            if self.result_overlay and not self.result_overlay.isVisible():
-                self.result_overlay.show()
+        if self.main_ui and self.main_ui.isVisible():
+            self.main_ui.update_display()
 
     def show_result_overlay(self, screen_x, screen_y, region_w, region_h, ids, boxes):
         if self.result_overlay is None:
