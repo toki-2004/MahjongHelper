@@ -100,14 +100,13 @@ class SelectionOverlay(QWidget):
 # ------------------ 结果覆盖层（移除绿框和背景，只显示标签和下拉栏） ------------------
 class ResultOverlay(QWidget):
     def __init__(self, screen_x, screen_y, region_w, region_h, helper=None):
-        margin = 20  # 减小外边距，因为不需要背景
+        margin = 20
         self.margin = margin
         self.screen_x = screen_x
         self.screen_y = screen_y
         super().__init__(None)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        # 窗口自身透传
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self.setMouseTracking(True)
         self.setGeometry(screen_x - margin, screen_y - margin,
@@ -118,7 +117,6 @@ class ResultOverlay(QWidget):
         self.helper = helper
         self.tile_names = [f"{i} {get_tile_name(i)}" for i in range(34)]
 
-        # 存储子控件列表，便于更新时清除
         self.label_list = []
         self.combo_list = []
 
@@ -134,37 +132,38 @@ class ResultOverlay(QWidget):
         self.tile_ids = tile_ids
         self.boxes = boxes
 
-        # 为每张牌创建标签和下拉栏
+        # 获取建议打出牌的索引
+        best_idx, _ = decide_discard(tile_ids) if tile_ids else (-1, -1)
+
         for i, (bx, by, bw, bh) in enumerate(boxes):
             if i >= len(tile_ids):
                 break
-            # 牌名标签：放在牌的下方
+
+            # ----- 牌名标签（根据是否建议打出设置颜色） -----
             lbl = QLabel(self)
             lbl.setText(get_tile_name(tile_ids[i]))
-            lbl.setStyleSheet("color: white; background-color: rgba(0,0,0,150); font-weight: bold; padding: 2px;")
+            if i == best_idx:
+                lbl.setStyleSheet("color: green; background-color: rgba(0,0,0,150); font-weight: bold; padding: 2px;")
+            else:
+                lbl.setStyleSheet("color: white; background-color: rgba(0,0,0,150); font-weight: bold; padding: 2px;")
             lbl.setAlignment(Qt.AlignCenter)
-            # 位置：牌下方
             lbl_x = bx + self.margin
             lbl_y = by + self.margin + bh + 2
             lbl_w = bw
             lbl_h = 20
             lbl.setGeometry(lbl_x, lbl_y, lbl_w, lbl_h)
-            # 标签透传鼠标
             lbl.setAttribute(Qt.WA_TransparentForMouseEvents, True)
             lbl.show()
             self.label_list.append(lbl)
 
-            # 下拉栏：放在牌的上方
+            # ----- 下拉栏（放在牌上方） -----
             cb = QComboBox(self)
             cb.addItems(self.tile_names)
             cb.setGeometry(bx + self.margin, by + self.margin - 25, bw, 22)
-            # 下拉栏可交互
             cb.setAttribute(Qt.WA_TransparentForMouseEvents, False)
             cb.currentIndexChanged.connect(lambda idx, i=i: self.on_combo_changed(i, idx))
             cb.show()
             self.combo_list.append(cb)
-
-        # 不需要绘制任何内容，所以不调用 update() 也无妨
 
     def on_combo_changed(self, index, selected_index):
         if index >= len(self.tile_ids):
@@ -327,7 +326,6 @@ class MahjongHelper(QObject):
         except Exception as e:
             print(f"热键注册失败: {e}，请以管理员身份运行。")
 
-        # 启动时自动弹出后台UI
         QTimer.singleShot(200, self.show_main_ui)
 
     def load_config(self):
