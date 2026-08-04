@@ -1,7 +1,8 @@
 import cv2
 import numpy as np
 import os
-from template_manager import templates, ID_TO_SUIT_VAL, get_tile_name, TEMPLATE_MATRIX, TEMPLATE_SIZE
+import template_manager as tm
+from template_manager import ID_TO_SUIT_VAL, get_tile_name
 
 OUTPUT_PATH = "debug_output"
 os.makedirs(OUTPUT_PATH, exist_ok=True)
@@ -11,7 +12,7 @@ def match_template_with_scores(roi):
     向量化模板匹配，与 cv2.matchTemplate(TM_CCOEFF_NORMED) 数学等价（误差 < 1e-5）。
     返回 [(tile_id, score), ...] 按分数降序。
     """
-    tpl_h, tpl_w = TEMPLATE_SIZE
+    tpl_h, tpl_w = tm.TEMPLATE_SIZE
     if roi.shape != (tpl_h, tpl_w):
         roi_resized = cv2.resize(roi, (tpl_w, tpl_h))
     else:
@@ -20,8 +21,8 @@ def match_template_with_scores(roi):
     vec = vec - vec.mean()
     norm = np.linalg.norm(vec)
     if norm < 1e-6:
-        return [(tid, 0.0) for tid in range(len(TEMPLATE_MATRIX))]
-    scores = (TEMPLATE_MATRIX @ vec) / norm
+        return [(tid, 0.0) for tid in range(len(tm.TEMPLATE_MATRIX))]
+    scores = (tm.TEMPLATE_MATRIX @ vec) / norm
     order = np.argsort(-scores)
     return [(int(tid), float(scores[tid])) for tid in order]
 
@@ -124,40 +125,35 @@ def _scan_region(region_gray, num_tiles, tile_width, offset):
             confs.append(0.0)
     return cands, confs, True
 
+def _count_bonus(num_tiles):
+    """麻将手牌主行通常是 13~14 张，给轻微偏好，仅在置信度接近时起作用。"""
+    if num_tiles in (13, 14):
+        return 0.015
+    if num_tiles in (12, 15):
+        return 0.007
+    return 0.0
+
 def recognize_region(gray, x, y, w, h):
     """
     在区域中确定牌数并做对齐偏移搜索：
-    先用 offset=0 粗选候选分档数，再对前 3 档做偏移精搜，
-    以“平均匹配置信度优先、有效槽数次之”选最优组合。
+    对每个分档数在多个偏移下扫描，以“平均匹配置信度优先、有效槽数次之”
+    选最优组合，避免仅按 0 偏移导致正确分档被淘汰。
     返回 (tile_candidates, count, tile_width, offset)。
     """
     region_gray = gray[y:y+h, x:x+w]
-    coarse = []
+    best_key = None
+    best = None
     for num_tiles in range(10, 19):
         tile_width = w // num_tiles
         if tile_width < 20:
             continue
-        cands, confs, ok = _scan_region(region_gray, num_tiles, tile_width, 0)
-        if not ok:
-            continue
-        valid = sum(1 for c in confs if c > 0)
-        if valid < 5:
-            continue
-        coarse.append((float(np.mean(confs)), valid, num_tiles, tile_width))
-    if not coarse:
-        return None, None, None, None
-    coarse.sort(key=lambda t: (t[0], t[1]), reverse=True)
-
-    best_key = None
-    best = None
-    for mean_c, valid_c, num_tiles, tile_width in coarse[:3]:
         step = max(4, tile_width // 4)
         for offset in range(0, tile_width, step):
             cands, confs, ok = _scan_region(region_gray, num_tiles, tile_width, offset)
             if not ok:
                 continue
             valid = sum(1 for c in confs if c > 0)
-            key = (float(np.mean(confs)), valid)
+            key = (float(np.mean(confs)) + _count_bonus(num_tiles), valid)
             if best_key is None or key > best_key:
                 best_key = key
                 best = (num_tiles, offset, tile_width, cands)
@@ -199,7 +195,7 @@ def recognize_tiles_from_image(img_bgr):
         if x2 > x + w and abs(y2 - y) < 20:
             gray2 = gray[y2:y2+h2, x2:x2+w2]
             if gray2.size > 0:
-                tpl_h, tpl_w = templates[0][1].shape
+                tpl_h, tpl_w = tm.TEMPLATE_SIZE
                 gray2_resized = cv2.resize(gray2, (tpl_w, tpl_h))
                 scores = match_template_with_scores(gray2_resized)
                 if scores:
