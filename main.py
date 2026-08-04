@@ -53,15 +53,15 @@ class RecognizeThread(QThread):
     def __init__(self, region):
         super().__init__()
         self.region = region
-        self.sct = mss.MSS()
 
     def run(self):
         logger.info("识别线程启动")
         start_time = time.time()
         try:
+            sct = mss.MSS()
             x, y, w, h = self.region
             monitor = {"left": x, "top": y, "width": w, "height": h}
-            img = self.sct.grab(monitor)
+            img = sct.grab(monitor)
             img_np = np.array(img)
             img_bgr = cv2.cvtColor(img_np, cv2.COLOR_BGRA2BGR)
             logger.info(f"截图完成，尺寸: {img_bgr.shape}")
@@ -367,7 +367,6 @@ class MainUI(QWidget):
 class MahjongHelper(QObject):
     def __init__(self):
         super().__init__()
-        self.sct = mss.MSS()
         self.overlay = None
         self.result_overlay = None
         self.timer = QTimer()

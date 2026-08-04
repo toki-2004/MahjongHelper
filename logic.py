@@ -12,65 +12,99 @@ def get_suit_val(id):
     elif id <= 26: return (2, id-18) # 饼
     else: return (3, -1)             # 字牌
 
+def _w_partial(v):
+    # 搭子权重：1-2 边缘（0-based 为 1-2）权重低，其余为 3
+    return 1 if v == 1 else 3
+
+def _build_alloc(max_r=12):
+    """预计算每个牌值上剩余 r4 张牌时的分配方案 (得分, 新顺子数, 搭子数, 间张数)。"""
+    alloc = []
+    for v in range(9):
+        w = _w_partial(v)
+        table = {}
+        for r4 in range(max_r + 1):
+            opts = []
+            for trip in range(r4 // 3 + 1):
+                r5 = r4 - 3 * trip
+                for pr in range(r5 // 2 + 1):
+                    r6 = r5 - 2 * pr
+                    for s in range(r6 + 1):
+                        r7 = r6 - s
+                        for q in range(r7 + 1):
+                            r8 = r7 - q
+                            for z in range(r8 + 1):
+                                opts.append((100 * trip + 10 * pr, s, q, z))
+            table[r4] = opts
+        alloc.append(table)
+    return alloc
+
+_ALLOC = _build_alloc()
+
+def _score_suit(cnt):
+    """
+    单花色动态规划，等价于原 DFS 的最大不相交组合权重：
+    状态 (a, b, p, g1, g2) 分别表示：
+      a  - 已用 2 张、待当前牌完成的顺子
+      b  - 已用 1 张、待当前和下一张的顺子
+      p  - 已用 1 张、待当前牌完成的搭子
+      g1 - 已用 1 张、待当前牌完成的间张
+      g2 - 已用 1 张、待下一张完成的间张
+    """
+    dp = {(0, 0, 0, 0, 0): 0}
+    for v in range(9):
+        c = cnt[v]
+        ndp = {}
+        table = _ALLOC[v]
+        w_prev = _w_partial(v - 1)
+        for (a, b, p, g1, g2), sc in dp.items():
+            for t_a in range(min(a, c) + 1):
+                r = c - t_a
+                base = sc + 100 * t_a
+                for t_p in range(min(p, r) + 1):
+                    r2 = r - t_p
+                    base2 = base + w_prev * t_p
+                    for t_g in range(min(g1, r2) + 1):
+                        r3 = r2 - t_g
+                        base3 = base2 + t_g
+                        for t_b in range(min(b, r3) + 1):
+                            r4 = r3 - t_b
+                            nb = t_b
+                            if r4 > 12:
+                                r4 = 12
+                            for gain, s, q, z in table[r4]:
+                                key = (nb, s, q, g2, z)
+                                nsc = base3 + gain
+                                if nsc > ndp.get(key, -1):
+                                    ndp[key] = nsc
+        dp = ndp
+    return max(dp.values())
+
 def calculate_score(tile_ids):
-    n = len(tile_ids)
-    groups = []
+    """按牌数统计后用 DP 求最大组合权重，避免原 DFS 的指数级搜索。"""
+    suits = [[0] * 9 for _ in range(3)]
+    honors = [0] * 7
+    for t in tile_ids:
+        if t <= 8:
+            suits[0][t] += 1
+        elif t <= 17:
+            suits[1][t - 9] += 1
+        elif t <= 26:
+            suits[2][t - 18] += 1
+        else:
+            honors[t - 27] += 1
 
-    # 三张组合：刻子 / 顺子
-    for i in range(n):
-        for j in range(i+1, n):
-            for k in range(j+1, n):
-                a,b,c = tile_ids[i], tile_ids[j], tile_ids[k]
-                s1,v1 = get_suit_val(a)
-                s2,v2 = get_suit_val(b)
-                s3,v3 = get_suit_val(c)
-                if a == b == c:
-                    groups.append((100, [i,j,k]))
-                elif s1 == s2 == s3 and s1 != 3:
-                    vals = sorted([v1,v2,v3])
-                    if vals[0]+1 == vals[1] and vals[1]+1 == vals[2]:
-                        groups.append((100, [i,j,k]))
-
-    # 两张组合：对子、相邻、间隔
-    for i in range(n):
-        for j in range(i+1, n):
-            a,b = tile_ids[i], tile_ids[j]
-            s1,v1 = get_suit_val(a)
-            s2,v2 = get_suit_val(b)
-            if a == b:
-                groups.append((10, [i,j]))
-            elif s1 == s2 and s1 != 3:
-                diff = abs(v1-v2)
-                if diff == 1:
-                    # 边缘相邻 (1-2 或 8-9) 权重降低
-                    if (v1 == 1 and v2 == 2) or (v1 == 2 and v2 == 1) or \
-                       (v1 == 8 and v2 == 9) or (v1 == 9 and v2 == 8):
-                        groups.append((1, [i,j]))
-                    else:
-                        groups.append((3, [i,j]))
-                elif diff == 2:
-                    groups.append((1, [i,j]))
-
-    # DFS 求最大总权重
-    best_score = 0
-    def dfs(start_idx, used_mask, current_score):
-        nonlocal best_score
-        if current_score > best_score:
-            best_score = current_score
-        for idx in range(start_idx, len(groups)):
-            weight, indices = groups[idx]
-            conflict = False
-            mask = 0
-            for idx_in_group in indices:
-                if used_mask & (1 << idx_in_group):
-                    conflict = True
-                    break
-                mask |= (1 << idx_in_group)
-            if not conflict:
-                dfs(idx+1, used_mask | mask, current_score + weight)
-
-    dfs(0, 0, 0)
-    return best_score
+    total = 0
+    for cnt in suits:
+        total += _score_suit(cnt)
+    for h in honors:
+        best = 0
+        for t in range(h // 3 + 1):
+            r = h - 3 * t
+            s = 100 * t + 10 * (r // 2)
+            if s > best:
+                best = s
+        total += best
+    return total
 
 def decide_discard(tile_ids):
     best_score = -1
