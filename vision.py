@@ -106,17 +106,31 @@ def extract_regions_by_color(img):
     rects.sort(key=lambda r: r[2]*r[3], reverse=True)
     return rects
 
+def _template_box(region_h, box_w):
+    """
+    按模板宽高比（TEMPLATE_SIZE 高:宽）计算居中裁剪框，返回 (top, bottom)。
+    保证每个牌位识别框与模板同比例，缩放匹配时不会产生形变。
+    """
+    tpl_h, tpl_w = tm.TEMPLATE_SIZE
+    if tpl_h is None or tpl_w is None or box_w <= 0:
+        return 0, region_h
+    box_h = max(1, int(round(box_w * tpl_h / tpl_w)))
+    top = max(0, (region_h - box_h) // 2)
+    bottom = min(region_h, top + box_h)
+    return top, bottom
+
 def _scan_region(region_gray, num_tiles, tile_width, offset):
     """按给定分档数和偏移扫描，返回 (candidates, confs, ok)。"""
     cands = []
     confs = []
-    width = region_gray.shape[1]
+    region_h, width = region_gray.shape
+    top, bottom = _template_box(region_h, tile_width)
     for i in range(num_tiles):
         left = offset + i * tile_width
         right = left + tile_width
         if right > width:
             return [], [], False
-        roi = region_gray[:, left:right]
+        roi = region_gray[top:bottom, left:right]
         if roi.shape[0] < 20 or roi.shape[1] < 20:
             return [], [], False
         scores = match_template_with_scores(roi)
@@ -198,9 +212,9 @@ def recognize_tiles_from_image(img_bgr):
         if x2 > x + w and abs(y2 - y) < 20:
             gray2 = gray[y2:y2+h2, x2:x2+w2]
             if gray2.size > 0:
-                tpl_h, tpl_w = tm.TEMPLATE_SIZE
-                gray2_resized = cv2.resize(gray2, (tpl_w, tpl_h))
-                scores = match_template_with_scores(gray2_resized)
+                top2, bottom2 = _template_box(h2, w2)
+                gray2_box = gray2[top2:bottom2, :]
+                scores = match_template_with_scores(gray2_box)
                 if scores:
                     tile_candidates.append(scores[:3])
                 else:
@@ -208,20 +222,22 @@ def recognize_tiles_from_image(img_bgr):
 
     corrected_ids = viterbi_correct(tile_candidates)
 
-    # 构建boxes
+    # 构建boxes（与识别裁剪框保持一致，均为模板比例）
     boxes = []
+    top_main, bottom_main = _template_box(h, tile_width)
+    box_h_main = bottom_main - top_main
     for i, tid in enumerate(corrected_ids):
         if i < len(corrected_ids) - 1 and i < len(tile_candidates) - 1:
             left = x + offset + i * tile_width
-            right = left + tile_width
-            boxes.append((left, y, tile_width, h))
+            boxes.append((left, y + top_main, tile_width, box_h_main))
         else:
             # 第二区域或末尾
             if x2 is not None:
-                boxes.append((x2, y2, w2, h2))
+                top2, bottom2 = _template_box(h2, w2)
+                boxes.append((x2, y2 + top2, w2, bottom2 - top2))
             else:
                 last_left = x + offset + (len(corrected_ids)-1) * tile_width
-                boxes.append((last_left, y, tile_width, h))
+                boxes.append((last_left, y + top_main, tile_width, box_h_main))
 
     # 绘制调试图
     debug_img = img_bgr.copy()

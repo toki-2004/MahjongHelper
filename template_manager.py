@@ -57,24 +57,22 @@ def rebuild_template_matrix(tpl_list=None):
     TEMPLATE_MATRIX = np.array(rows, dtype=np.float32)
     TEMPLATE_SIZE = size
 
-# 更新单个模板（在线融合）
-def update_template(tile_id, roi_gray, merge_ratio=0.3):
+# 更新单个模板（在线替换）
+def update_template(tile_id, roi_gray):
     """
-    将新样本 roi_gray 与现有模板融合，保存并重新加载
-    merge_ratio: 新样本权重（0~1），推荐0.3
+    用新样本 roi_gray 直接替换对应模板，保存并重新加载
     """
     path = os.path.join(TEMPLATE_PATH, f"{tile_id}.png")
-    if os.path.exists(path):
+    new = roi_gray
+    # 与当前模板列表保持尺寸一致，避免破坏矩阵预计算
+    if TEMPLATE_SIZE is not None:
+        tpl_h, tpl_w = TEMPLATE_SIZE
+        if new.shape != (tpl_h, tpl_w):
+            new = cv2.resize(new, (tpl_w, tpl_h))
+    elif os.path.exists(path):
         old = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
-        if old is not None:
-            # 尺寸一致
-            if roi_gray.shape != old.shape:
-                roi_gray = cv2.resize(roi_gray, (old.shape[1], old.shape[0]))
-            new = cv2.addWeighted(roi_gray, merge_ratio, old, 1-merge_ratio, 0)
-        else:
-            new = roi_gray
-    else:
-        new = roi_gray
+        if old is not None and new.shape != old.shape:
+            new = cv2.resize(new, (old.shape[1], old.shape[0]))
     cv2.imwrite(path, new)
     # 重新加载整个模板列表（或只更新内存中的）
     global templates

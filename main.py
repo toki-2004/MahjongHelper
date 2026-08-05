@@ -243,7 +243,7 @@ class ResultOverlay(QWidget):
         if gray_roi is None:
             QMessageBox.information(self, "提示", "该牌的图像数据不存在，请重新识别。")
             return
-        success = update_template(correct_id, gray_roi, merge_ratio=0.3)
+        success = update_template(correct_id, gray_roi)
         if success:
             QMessageBox.information(self, "成功", f"模板 {get_tile_name(correct_id)} 已更新！")
             if self.helper and self.helper.capture_region:
