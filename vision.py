@@ -157,7 +157,7 @@ def recognize_region(gray, x, y, w, h):
     选最优组合，避免仅按 0 偏移导致正确分档被淘汰。
     返回 (tile_candidates, count, tile_width, offset)。
     """
-    region_gray = gray[y:y+h, x:x+w]
+    region_gray = tm.preprocess_tile(gray[y:y+h, x:x+w])
     best_key = None
     best = None
     for num_tiles in range(10, 19):
@@ -194,7 +194,6 @@ def recognize_tiles_from_image(img_bgr):
         debug_img: 带绘制框的图像（用于显示）
     """
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-    gray = cv2.equalizeHist(gray)
     rects = extract_regions_by_color(img_bgr)
     if not rects:
         return [], [], img_bgr
@@ -210,7 +209,7 @@ def recognize_tiles_from_image(img_bgr):
     if len(rects) > 1:
         x2, y2, w2, h2 = rects[1]
         if x2 > x + w and abs(y2 - y) < 20:
-            gray2 = gray[y2:y2+h2, x2:x2+w2]
+            gray2 = tm.preprocess_tile(gray[y2:y2+h2, x2:x2+w2])
             if gray2.size > 0:
                 top2, bottom2 = _template_box(h2, w2)
                 gray2_box = gray2[top2:bottom2, :]

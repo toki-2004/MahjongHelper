@@ -6,6 +6,32 @@ import json
 TEMPLATE_PATH = "templates"
 CONFIG_PATH = "config.json"
 
+# 单张牌面预处理：降噪 + 对比度拉伸 + 背景白化
+def preprocess_tile(gray):
+    """
+    对单张牌面图像做标准化预处理：
+    1. 双边滤波降噪，保留花色边缘；
+    2. 按 2%~98% 分位数线性拉伸对比度；
+    3. 近白色像素置为纯白，去除牌面背景杂色。
+
+    模板加载、在线修正存盘、识别 ROI 统一使用该处理，保证匹配域一致。
+    """
+    if gray is None or gray.size == 0:
+        return gray
+    if gray.dtype != np.uint8:
+        gray = gray.astype(np.uint8)
+    denoised = cv2.bilateralFilter(gray, d=5, sigmaColor=50, sigmaSpace=5)
+    lo, hi = np.percentile(denoised, (2, 98))
+    if hi - lo < 1:
+        stretched = denoised.copy()
+    else:
+        stretched = np.clip(
+            (denoised.astype(np.float32) - lo) * (255.0 / (hi - lo)),
+            0, 255,
+        ).astype(np.uint8)
+    stretched[stretched >= 200] = 255
+    return stretched
+
 # 牌映射（同 vision.py）
 ID_TO_SUIT_VAL = {}
 for i in range(9):
@@ -28,7 +54,7 @@ def load_templates():
         if os.path.exists(path):
             img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
             if img is not None:
-                templates.append((i, img))
+                templates.append((i, preprocess_tile(img)))
             else:
                 print(f"警告：{path} 读取失败")
         else:
@@ -63,7 +89,7 @@ def update_template(tile_id, roi_gray):
     用新样本 roi_gray 直接替换对应模板，保存并重新加载
     """
     path = os.path.join(TEMPLATE_PATH, f"{tile_id}.png")
-    new = roi_gray
+    new = preprocess_tile(roi_gray)
     # 与当前模板列表保持尺寸一致，避免破坏矩阵预计算
     if TEMPLATE_SIZE is not None:
         tpl_h, tpl_w = TEMPLATE_SIZE
