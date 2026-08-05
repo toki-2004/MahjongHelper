@@ -7,6 +7,7 @@ import numpy as np
 TEMPLATE_PATH = "templates"
 CONFIG_PATH = "config.json"
 TEMPLATE_SIZE = (141, 96)  # (高, 宽)，所有模板统一尺寸
+COARSE_SIZE = (48, 32)     # 布局搜索用的粗粒度灰度尺寸（高, 宽）
 
 # 同会话内每张牌的修正次数（用于模板滚动平均，重启后重置）
 _sample_counts = {}
@@ -65,6 +66,37 @@ def _resize_to_template(img):
     return img
 
 
+def _align_image(new, ref, max_shift=3):
+    """
+    将 new 平移配准到 ref（相位相关，亚像素），返回对齐后的图像。
+    对齐不可靠（偏移过大或对齐后相关性反而下降）时返回 None，由调用方决定。
+    只修正轻微错位（默认 ±3px）：重复花纹（如 9p 多排圆点）相位相关可能
+    锁定到错误周期产生大位移，超出范围一律视为不可靠。
+    """
+    if new is None or ref is None or new.shape != ref.shape:
+        return None
+    g_new = cv2.cvtColor(new, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    g_ref = cv2.cvtColor(ref, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    try:
+        (dx, dy), _ = cv2.phaseCorrelate(g_ref, g_new)
+    except cv2.error:
+        return None
+    if abs(dx) > max_shift or abs(dy) > max_shift:
+        return None
+
+    m = np.float32([[1, 0, -dx], [0, 1, -dy]])
+    aligned = cv2.warpAffine(new, m, (new.shape[1], new.shape[0]),
+                             borderMode=cv2.BORDER_REPLICATE)
+    # 校验：对齐后与参考的相关性应不低于对齐前
+    def corr(p, q):
+        pa = p.astype(np.float32) - p.astype(np.float32).mean()
+        qa = q.astype(np.float32) - q.astype(np.float32).mean()
+        return float((pa * qa).sum() / (np.linalg.norm(pa) * np.linalg.norm(qa) + 1e-9))
+    if corr(aligned, ref) < corr(new, ref) - 1e-6:
+        return None
+    return aligned
+
+
 def load_templates():
     """从 TEMPLATE_PATH 加载 34 张模板并预处理，构建匹配矩阵。"""
     templates = []
@@ -88,6 +120,45 @@ def load_templates():
     return templates
 
 
+def load_samples():
+    """
+    加载每张牌的全部对齐样本（templates/samples/{tile_id}/*.png），
+    构建示例矩阵供样本级匹配使用（kNN 式，取每类最高分）。
+    """
+    global SAMPLES, EXEMPLAR_MATRIX, EXEMPLAR_IDS
+    SAMPLES = {}
+    base = os.path.join(TEMPLATE_PATH, "samples")
+    if not os.path.isdir(base):
+        EXEMPLAR_MATRIX = None
+        EXEMPLAR_IDS = []
+        return SAMPLES
+    for d in sorted(os.listdir(base)):
+        if not d.isdigit():
+            continue
+        tid = int(d)
+        paths = sorted(f for f in os.listdir(os.path.join(base, d)) if f.endswith(".png"))
+        imgs = []
+        for p in paths:
+            img = cv2.imread(os.path.join(base, d, p), cv2.IMREAD_COLOR)
+            if img is not None:
+                imgs.append(_resize_to_template(preprocess_tile(img)))
+        if imgs:
+            SAMPLES[tid] = imgs
+
+    rows = []
+    ids = []
+    for tid in sorted(SAMPLES):
+        for img in SAMPLES[tid]:
+            vec = img.astype(np.float32).reshape(-1)
+            vec = vec - vec.mean()
+            n = np.linalg.norm(vec)
+            rows.append(vec / n if n > 1e-6 else np.zeros_like(vec))
+            ids.append(tid)
+    EXEMPLAR_MATRIX = np.array(rows, dtype=np.float32) if rows else None
+    EXEMPLAR_IDS = ids
+    return SAMPLES
+
+
 def rebuild_template_matrix(tpl_list=None):
     """
     预计算模板的归一化向量矩阵（BGR 三通道拼接后去均值、单位化），
@@ -107,6 +178,29 @@ def rebuild_template_matrix(tpl_list=None):
         rows.append(vec / n if n > 1e-6 else np.zeros_like(vec))
     TEMPLATE_MATRIX = np.array(rows, dtype=np.float32)
     TEMPLATE_SIZE = (h, w)
+    rebuild_coarse_matrix(tpl_list)
+
+
+def rebuild_coarse_matrix(tpl_list=None):
+    """
+    构建粗粒度灰度模板矩阵，用于布局搜索（只求快速确定分档数/偏移，
+    最终判定仍用全彩样本级匹配）。
+    """
+    global COARSE_MATRIX
+    if tpl_list is None:
+        tpl_list = templates
+    if not tpl_list:
+        return
+    h, w = COARSE_SIZE
+    rows = []
+    for _, tpl in tpl_list:
+        gray = cv2.cvtColor(tpl, cv2.COLOR_BGR2GRAY)
+        small = cv2.resize(gray, (w, h), interpolation=cv2.INTER_AREA)
+        vec = small.astype(np.float32).reshape(-1)
+        vec = vec - vec.mean()
+        n = np.linalg.norm(vec)
+        rows.append(vec / n if n > 1e-6 else np.zeros_like(vec))
+    COARSE_MATRIX = np.array(rows, dtype=np.float32)
 
 
 def update_template(tile_id, img):
@@ -128,6 +222,10 @@ def update_template(tile_id, img):
             # 旧模板是灰度（历史版本采集）：直接替换为彩色，避免混色
             n = 0
         elif old.shape[:2] == new.shape[:2]:
+            # 加权平均前先做平移配准，消除采集错位造成的重影
+            aligned = _align_image(new, old)
+            if aligned is not None:
+                new = aligned
             avg = (old.astype(np.float32) * n + new.astype(np.float32)) / (n + 1)
             new = np.clip(avg, 0, 255).astype(np.uint8)
     _sample_counts[tile_id] = n + 1
@@ -159,7 +257,13 @@ def build_template_library(origin_dir="templates_origin", samples_by_id=None, ta
                 if s is not None and s.size > 0:
                     refs.append(_resize_to_template(preprocess_tile(_to_bgr(s))))
         if refs:
-            avg = np.mean(np.stack(refs), axis=0).astype(np.uint8)
+            # 以第一张为基准，其余样本平移配准后再平均，避免重影
+            base = refs[0]
+            aligned_refs = [base]
+            for s in refs[1:]:
+                a = _align_image(s, base)
+                aligned_refs.append(a if a is not None else s)
+            avg = np.mean(np.stack(aligned_refs), axis=0).astype(np.uint8)
             cv2.imwrite(os.path.join(target_dir, f"{i}.png"), avg)
             built.append((i, len(refs)))
     return built
@@ -176,5 +280,10 @@ def get_tile_name(tile_id):
     return f"{val}{suit_map[suit]}"
 
 
-# 全局模板变量（供 vision.py 使用）
+# 全局变量（供 vision.py 使用）
+SAMPLES = {}
+EXEMPLAR_MATRIX = None
+EXEMPLAR_IDS = []
+COARSE_MATRIX = None
 templates = load_templates()
+load_samples()

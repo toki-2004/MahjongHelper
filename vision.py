@@ -19,6 +19,13 @@ os.makedirs(OUTPUT_PATH, exist_ok=True)
 MIN_CONF = 0.30  # 最低可接受匹配分数
 
 
+def _corr2d(a, b):
+    """两个等尺寸 BGR 图像的归一化相关（多通道）。"""
+    pa = a.astype(np.float32) - a.astype(np.float32).mean()
+    qa = b.astype(np.float32) - b.astype(np.float32).mean()
+    return float((pa * qa).sum() / (np.linalg.norm(pa) * np.linalg.norm(qa) + 1e-9))
+
+
 def match_template_with_scores(roi):
     """
     彩色模板匹配：把 ROI 与 34 张模板做多通道归一化相关
@@ -43,6 +50,62 @@ def match_template_with_scores(roi):
     scores = (tm.TEMPLATE_MATRIX @ vec) / norm
     order = np.argsort(-scores)
     return [(int(tid), float(scores[tid])) for tid in order]
+
+
+def match_template_with_scores_fast(roi):
+    """
+    粗粒度灰度快速匹配：仅用于布局搜索（分档数/偏移），
+    计算量约为全彩匹配的 1/30，最终判定由样本级匹配负责。
+    """
+    h, w = tm.COARSE_SIZE
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY) if roi.ndim == 3 else roi
+    small = cv2.resize(gray, (w, h), interpolation=cv2.INTER_AREA)
+    vec = small.astype(np.float32).reshape(-1)
+    vec = vec - vec.mean()
+    norm = np.linalg.norm(vec)
+    if tm.COARSE_MATRIX is None or tm.COARSE_MATRIX.shape[1] != vec.shape[0]:
+        tm.rebuild_coarse_matrix()
+    if norm < 1e-6:
+        return [(tid, 0.0) for tid in range(len(tm.COARSE_MATRIX))]
+    scores = (tm.COARSE_MATRIX @ vec) / norm
+    order = np.argsort(-scores)
+    return [(int(tid), float(scores[tid])) for tid in order]
+
+
+def match_template_with_scores_exemplar(roi, top_k=8):
+    """
+    样本级匹配（kNN 式）：快速匹配取 top_k 候选后，用每张牌的全部对齐样本
+    重新打分并取该牌最高分。平均模板会模糊细节，样本级匹配对临界牌（如 4w/8w）
+    判别力更强。无样本时回退到平均模板分数。
+    """
+    base = match_template_with_scores(roi)
+    if not base:
+        return base
+    tpl_h, tpl_w = tm.TEMPLATE_SIZE
+    if roi.ndim == 2:
+        roi = cv2.cvtColor(roi, cv2.COLOR_GRAY2BGR)
+    if roi.shape[:2] != (tpl_h, tpl_w):
+        roi = cv2.resize(roi, (tpl_w, tpl_h), interpolation=cv2.INTER_AREA)
+    vec = roi.astype(np.float32).reshape(-1)
+    vec = vec - vec.mean()
+    norm = np.linalg.norm(vec)
+
+    best = {}
+    if tm.EXEMPLAR_MATRIX is not None and norm > 1e-6:
+        candidate_ids = set(tid for tid, _ in base[:top_k])
+        rows_sel = [i for i, tid in enumerate(tm.EXEMPLAR_IDS) if tid in candidate_ids]
+        if rows_sel:
+            scores = (tm.EXEMPLAR_MATRIX[rows_sel] @ vec) / norm
+            for s, ri in zip(scores, rows_sel):
+                tid = int(tm.EXEMPLAR_IDS[ri])
+                if s > best.get(tid, -1e9):
+                    best[tid] = float(s)
+
+    # 平均模板分数兜底（无样本的牌或分数更高时）
+    for tid, s in base:
+        if tid not in best or s > best[tid]:
+            best[tid] = s
+    return sorted(best.items(), key=lambda x: -x[1])
 
 
 def viterbi_correct(tile_candidates):
@@ -212,7 +275,7 @@ def _scan_region(region_bgr, num_tiles, tile_width, offset):
         roi = region_bgr[top:bottom, left:right]
         if roi.shape[0] < 20 or roi.shape[1] < 20:
             return [], [], False
-        scores = match_template_with_scores(roi)
+        scores = match_template_with_scores_fast(roi)
         if scores and scores[0][1] > MIN_CONF:
             cands.append(scores[:3])
             confs.append(scores[0][1])
@@ -339,7 +402,7 @@ def recognize_tiles_from_image(img_bgr, debug_tag=None):
         if roi.shape[0] < 20 or roi.shape[1] < 20:
             tile_candidates.append([])
             continue
-        scores = match_template_with_scores(roi)
+        scores = match_template_with_scores_exemplar(roi)
         if scores and scores[0][1] > MIN_CONF:
             tile_candidates.append(scores[:3])
         else:
@@ -354,7 +417,7 @@ def recognize_tiles_from_image(img_bgr, debug_tag=None):
         rx0, rx1, top2, bottom2 = second_rect
         crop_x0 = max(0, min(rx0, w2 - 1))
         crop_x1 = min(w2, max(rx1, crop_x0 + 1))
-        scores = match_template_with_scores(region2[top2:bottom2, crop_x0:crop_x1])
+        scores = match_template_with_scores_exemplar(region2[top2:bottom2, crop_x0:crop_x1])
         if scores:
             tile_candidates.append(scores[:3])
         else:
