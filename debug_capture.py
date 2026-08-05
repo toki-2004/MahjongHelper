@@ -3,13 +3,14 @@
 麻将牌面截图调试工具
 
 热键：
-    F2  立即截取全屏，保存到 input/ 目录
-    F3  拖拽鼠标框选区域，松开后保存框选内容
+    F2  立即截取鼠标所在屏幕，保存到 input/ 目录
+    F3  拖拽鼠标框选区域（覆盖层显示在鼠标所在屏幕），松开后保存框选内容
     ESC 取消框选
 
 用法：
     python debug_capture.py [monitor_index]
-        monitor_index: 默认 1（主显示器）；多显示器环境可传 2、3…
+        monitor_index: 不传则自动截取鼠标所在屏幕；
+                       传 1、2、3… 则按 mss 显示器索引截取对应屏幕
 
 保存规则：
     自动沿用 input/ 下已有编号顺延（如已有 1.png，则保存为 2.png），
@@ -25,7 +26,7 @@ import keyboard
 import mss
 import numpy as np
 from PyQt5.QtCore import Qt, QObject, pyqtSignal
-from PyQt5.QtGui import QColor, QPainter, QPen
+from PyQt5.QtGui import QColor, QGuiApplication, QPainter, QPen, QCursor
 from PyQt5.QtWidgets import QApplication, QWidget
 
 SAVE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "input")
@@ -48,11 +49,15 @@ class SelectionOverlay(QWidget):
     """全屏半透明拖拽框选，交互与 main.py 保持一致。"""
     selection_done = pyqtSignal(int, int, int, int)
 
-    def __init__(self):
+    def __init__(self, screen):
         super().__init__(None)
+        self._screen = screen
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setCursor(Qt.CrossCursor)
+        if screen is not None:
+            g = screen.geometry()
+            self.setGeometry(g.x(), g.y(), g.width(), g.height())
         self.showFullScreen()
 
         self.start_x = None
@@ -115,7 +120,9 @@ class SelectionOverlay(QWidget):
             h = abs(self.start_y - self.end_y)
 
             if w > 20 and h > 20:
-                self.selection_done.emit(x, y, w, h)
+                g = self._screen.geometry()
+                # 转成虚拟桌面绝对坐标，mss 按绝对坐标抓取，多屏才不会错位
+                self.selection_done.emit(g.x() + x, g.y() + y, w, h)
             else:
                 self.close()
 
@@ -145,6 +152,15 @@ def grab_bgr(monitor):
     return cv2.cvtColor(np.array(shot), cv2.COLOR_BGRA2BGR)
 
 
+def cursor_monitor():
+    """返回鼠标当前所在屏幕的 mss monitor 字典（虚拟桌面绝对坐标）。"""
+    screen = QGuiApplication.screenAt(QCursor.pos())
+    if screen is None:
+        screen = QGuiApplication.primaryScreen()
+    g = screen.geometry()
+    return {"left": g.x(), "top": g.y(), "width": g.width(), "height": g.height()}
+
+
 def save_shot(img_bgr, source):
     global _last_shot_time
     now = time.time()
@@ -160,15 +176,17 @@ def save_shot(img_bgr, source):
 
 def on_f2(monitor_index):
     try:
-        with mss.MSS() as sct:
-            monitors = sct.monitors
-            if monitor_index < 1 or monitor_index >= len(monitors):
-                print(f"警告：显示器索引 {monitor_index} 不存在，使用主显示器")
-                monitor = monitors[1]
-            else:
-                monitor = monitors[monitor_index]
-            shot = sct.grab(monitor)
-        img = cv2.cvtColor(np.array(shot), cv2.COLOR_BGRA2BGR)
+        if monitor_index >= 1:
+            with mss.MSS() as sct:
+                monitors = sct.monitors
+                if monitor_index >= len(monitors):
+                    print(f"警告：显示器索引 {monitor_index} 不存在，改用鼠标所在屏幕")
+                    monitor = cursor_monitor()
+                else:
+                    monitor = monitors[monitor_index]
+        else:
+            monitor = cursor_monitor()
+        img = grab_bgr(monitor)
         save_shot(img, "F2 全屏截图")
     except Exception as e:
         print(f"F2 截图失败: {e}")
@@ -177,7 +195,10 @@ def on_f2(monitor_index):
 def on_f3(overlay_ref):
     if overlay_ref["overlay"] is not None:
         return
-    overlay = SelectionOverlay()
+    screen = QGuiApplication.screenAt(QCursor.pos())
+    if screen is None:
+        screen = QGuiApplication.primaryScreen()
+    overlay = SelectionOverlay(screen)
     overlay_ref["overlay"] = overlay
     overlay.selection_done.connect(lambda x, y, w, h: on_region_done(overlay_ref, x, y, w, h))
     overlay.show()
@@ -205,7 +226,7 @@ def on_region_done(overlay_ref, x, y, w, h):
 
 
 def main():
-    monitor_index = 1
+    monitor_index = 0  # 0 = 自动：鼠标所在屏幕
     if len(sys.argv) > 1 and sys.argv[1].isdigit():
         monitor_index = int(sys.argv[1])
 
@@ -226,6 +247,10 @@ def main():
         return
 
     print(f"调试截图工具已启动，保存目录: {SAVE_DIR}")
+    with mss.MSS() as sct:
+        for idx, m in enumerate(sct.monitors):
+            tag = "全部屏幕" if idx == 0 else f"屏幕{idx}"
+            print(f"  mss[{idx}] {tag}: ({m['left']},{m['top']}) {m['width']}x{m['height']}")
     print("F2 全屏截图 | F3 框选区域 | ESC 取消框选 | Ctrl+C 退出")
     app.exec_()
 
