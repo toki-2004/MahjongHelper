@@ -24,7 +24,7 @@ import cv2
 import keyboard
 import mss
 import numpy as np
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import Qt, QObject, pyqtSignal
 from PyQt5.QtGui import QColor, QPainter, QPen
 from PyQt5.QtWidgets import QApplication, QWidget
 
@@ -32,6 +32,16 @@ SAVE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "input")
 COOLDOWN = 0.6  # 秒，防止按住热键时连发重复截图
 
 _last_shot_time = 0.0
+
+
+class HotkeyBridge(QObject):
+    """
+    热键信号桥：keyboard 的回调运行在独立线程，不能直接操作 Qt 界面，
+    因此由该对象的信号把事件排队投递到 Qt 主线程（跨线程信号为队列连接）。
+    """
+    f2 = pyqtSignal()
+    f3 = pyqtSignal()
+    esc = pyqtSignal()
 
 
 class SelectionOverlay(QWidget):
@@ -200,12 +210,17 @@ def main():
         monitor_index = int(sys.argv[1])
 
     app = QApplication(sys.argv)
+    bridge = HotkeyBridge()
     overlay_ref = {"overlay": None}
 
+    bridge.f2.connect(lambda: on_f2(monitor_index))
+    bridge.f3.connect(lambda: on_f3(overlay_ref))
+    bridge.esc.connect(lambda: cancel_overlay(overlay_ref))
+
     try:
-        keyboard.add_hotkey("F2", lambda: QTimer.singleShot(0, lambda: on_f2(monitor_index)))
-        keyboard.add_hotkey("F3", lambda: QTimer.singleShot(0, lambda: on_f3(overlay_ref)))
-        keyboard.add_hotkey("esc", lambda: QTimer.singleShot(0, lambda: cancel_overlay(overlay_ref)))
+        keyboard.add_hotkey("F2", bridge.f2.emit)
+        keyboard.add_hotkey("F3", bridge.f3.emit)
+        keyboard.add_hotkey("esc", bridge.esc.emit)
     except Exception as e:
         print(f"热键注册失败（可能需要管理员权限）: {e}")
         return
