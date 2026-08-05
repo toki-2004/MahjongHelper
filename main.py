@@ -365,6 +365,11 @@ class MainUI(QWidget):
 
 
 class MahjongHelper(QObject):
+    # 全局热键信号：keyboard 回调在独立线程，通过信号队列投递到主线程
+    hotkey_f2 = pyqtSignal()
+    hotkey_f1 = pyqtSignal()
+    hotkey_esc = pyqtSignal()
+
     def __init__(self):
         super().__init__()
         self.overlay = None
@@ -384,9 +389,12 @@ class MahjongHelper(QObject):
         self.setup_tray()
 
         try:
-            keyboard.add_hotkey('F2', lambda: QTimer.singleShot(0, self.start_selection))
-            keyboard.add_hotkey('esc', lambda: QTimer.singleShot(0, self.cancel_selection))
-            keyboard.add_hotkey('F1', lambda: QTimer.singleShot(0, self.refresh_recognition))
+            self.hotkey_f2.connect(self.start_selection)
+            self.hotkey_f1.connect(self.refresh_recognition)
+            self.hotkey_esc.connect(self.cancel_selection)
+            keyboard.add_hotkey('F2', self.hotkey_f2.emit)
+            keyboard.add_hotkey('F1', self.hotkey_f1.emit)
+            keyboard.add_hotkey('esc', self.hotkey_esc.emit)
             logger.info("全局热键注册成功：F2-框选，F1-刷新，ESC-取消。")
         except Exception as e:
             logger.error(f"热键注册失败: {e}，请以管理员身份运行。")
