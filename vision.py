@@ -231,27 +231,54 @@ def _count_bonus(num_tiles):
     return 0.0
 
 
+def _tile_row_extent(region_gray):
+    """
+    估算牌行的横向范围（白色牌面的最小左缘到最大右缘），
+    用于排除框选区域内牌行两侧的空白，避免少牌时被分档切碎。
+    返回 (x0, x1)；找不到牌面时返回 None。
+    """
+    mask = (region_gray >= 180).astype(np.uint8)
+    n, labels, stats, cents = cv2.connectedComponentsWithStats(mask, 8)
+    lefts = []
+    rights = []
+    for i in range(1, n):
+        sx, sy, sw, sh, area = stats[i]
+        if sw >= 12 and sh >= 20 and area >= 300:
+            lefts.append(sx)
+            rights.append(sx + sw)
+    if not lefts:
+        return None
+    return min(lefts), max(rights)
+
+
 def recognize_region(region_bgr, region_gray, region_w, region_h):
     """
     在已预处理的主区域内搜索最佳分档数与偏移。
     返回 (tile_candidates, valid, tile_width, offset)。
     """
+    # 只在实际牌行范围内分档（排除两侧空白），支持 3~18 张
+    extent = _tile_row_extent(region_gray)
+    if extent is None:
+        extent = (0, region_w)
+    ex0, ex1 = extent
+    row_w = ex1 - ex0
+
     best_key = None
     best = None
-    for num_tiles in range(10, 19):
-        tile_width = region_w // num_tiles
+    for num_tiles in range(3, 19):
+        tile_width = row_w // num_tiles
         if tile_width < 20:
             continue
         step = max(4, tile_width // 4)
-        for offset in range(0, tile_width, step):
-            cands, confs, ok = _scan_region(region_bgr, num_tiles, tile_width, offset)
+        for off in range(0, tile_width, step):
+            cands, confs, ok = _scan_region(region_bgr, num_tiles, tile_width, ex0 + off)
             if not ok:
                 continue
             valid = sum(1 for c in confs if c > 0)
             key = (float(np.mean(confs)) + _count_bonus(num_tiles), valid)
             if best_key is None or key > best_key:
                 best_key = key
-                best = (num_tiles, offset, tile_width, cands)
+                best = (num_tiles, ex0 + off, tile_width, cands)
     if best is None:
         return None, None, None, None
 

@@ -8,6 +8,11 @@ TEMPLATE_PATH = "templates"
 CONFIG_PATH = "config.json"
 TEMPLATE_SIZE = (141, 96)  # (高, 宽)，所有模板统一尺寸
 
+# 同会话内每张牌的修正次数（用于模板滚动平均，重启后重置）
+_sample_counts = {}
+# 已提示过缺失的模板（每个进程只提示一次，避免反复刷屏）
+_missing_warned = set()
+
 # 牌映射（供 vision.py / main.py）
 ID_TO_SUIT_VAL = {}
 for i in range(9):
@@ -75,6 +80,9 @@ def load_templates():
         if img is not None:
             templates.append((i, _resize_to_template(preprocess_tile(img))))
         else:
+            if i not in _missing_warned:
+                print(f"模板缺失：{i}.png（当前为占位，等待采集）")
+                _missing_warned.add(i)
             templates.append((i, np.full((TEMPLATE_SIZE[0], TEMPLATE_SIZE[1], 3), 255, np.uint8)))
     rebuild_template_matrix(templates)
     return templates
@@ -102,11 +110,28 @@ def rebuild_template_matrix(tpl_list=None):
 
 
 def update_template(tile_id, img):
-    """在线修正：用新样本直接替换对应模板（预处理后保存并重新加载）。"""
-    path = os.path.join(TEMPLATE_PATH, f"{tile_id}.png")
-    new = _resize_to_template(preprocess_tile(_to_bgr(img)))
-    cv2.imwrite(path, new)
+    """
+    在线修正/模板采集：用新样本预处理后保存。
+    同一会话内同一张牌多次修正时做滚动平均（加权），避免单次样本覆盖导致模板不稳。
+    """
     global templates
+    path = os.path.join(TEMPLATE_PATH, f"{tile_id}.png")
+    os.makedirs(TEMPLATE_PATH, exist_ok=True)
+    new = _resize_to_template(preprocess_tile(_to_bgr(img)))
+    n = _sample_counts.get(tile_id, 0)
+    old = cv2.imread(path, cv2.IMREAD_COLOR) if n > 0 and os.path.exists(path) else None
+    if old is not None:
+        old_is_gray = (np.max(old[..., 2]) - np.min(old[..., 0]) < 6 and
+                       np.abs(old[..., 0].astype(int) - old[..., 1]).mean() < 2 and
+                       np.abs(old[..., 1].astype(int) - old[..., 2]).mean() < 2)
+        if old_is_gray:
+            # 旧模板是灰度（历史版本采集）：直接替换为彩色，避免混色
+            n = 0
+        elif old.shape[:2] == new.shape[:2]:
+            avg = (old.astype(np.float32) * n + new.astype(np.float32)) / (n + 1)
+            new = np.clip(avg, 0, 255).astype(np.uint8)
+    _sample_counts[tile_id] = n + 1
+    cv2.imwrite(path, new)
     templates = load_templates()
     return True
 

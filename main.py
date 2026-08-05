@@ -75,8 +75,8 @@ class RecognizeThread(QThread):
                 if i < len(ids):
                     roi = img_bgr[by:by+bh, bx:bx+bw]
                     if roi.size > 0:
-                        gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-                        rois[i] = gray_roi
+                        # 保存彩色 ROI，模板采集保留花色颜色
+                        rois[i] = roi
 
             elapsed = time.time() - start_time
             logger.info(f"识别总耗时: {elapsed:.2f}秒")
@@ -232,7 +232,8 @@ class ResultOverlay(QWidget):
             self.label_list.append(lbl)
 
             cb = QComboBox(self)
-            cb.addItems(self.tile_names)
+            # 首项为占位项：下拉默认不选中任何牌，保证选择任意牌（含 1w）都会触发修正
+            cb.addItems(["(选择修正)"] + self.tile_names)
             cb.setGeometry(bx + self.margin, by + self.margin - 25, bw, 22)
             cb.setAttribute(Qt.WA_TransparentForMouseEvents, False)
             cb.currentIndexChanged.connect(lambda idx, i=i: self.on_combo_changed(i, idx))
@@ -242,9 +243,10 @@ class ResultOverlay(QWidget):
     def on_combo_changed(self, index, selected_index):
         if index >= len(self.tile_ids):
             return
-        if selected_index < 0:
+        if selected_index <= 0:
+            # 占位项“(选择修正)”，未选择具体牌
             return
-        correct_id = selected_index
+        correct_id = selected_index - 1
         gray_roi = self.helper.current_rois.get(index)
         if gray_roi is None:
             QMessageBox.information(self, "提示", "该牌的图像数据不存在，请重新识别。")
@@ -252,8 +254,9 @@ class ResultOverlay(QWidget):
         success = update_template(correct_id, gray_roi)
         if success:
             QMessageBox.information(self, "成功", f"模板 {get_tile_name(correct_id)} 已更新！")
-            if self.helper and self.helper.capture_region:
-                self.helper.capture_and_recognize(self.helper.capture_region)
+            if self.helper:
+                # 更新模板后自动执行一次 F1 刷新，立即验证效果
+                self.helper.refresh_recognition()
         else:
             QMessageBox.warning(self, "失败", "模板更新失败。")
 
