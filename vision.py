@@ -119,6 +119,53 @@ def _template_box(region_h, box_w):
     bottom = min(region_h, top + box_h)
     return top, bottom
 
+def _tile_face_rects(region_gray, num_tiles, offset, tile_width):
+    """
+    按槽位定位每张牌的实际白色牌面，返回 [(x0, x1, top, bottom), ...]。
+    牌面之间留有间隙时，矩形只包住牌面并外扩少量边框边距，
+    避免等距分档把牌间间隙并入下一张牌的识别框（消除累积偏移）。
+    牌面按白色连通域定位（大花色位于牌面内部，不会把白色区域劈开）。
+    """
+    region_h, region_w = region_gray.shape
+    mask = (region_gray >= 200).astype(np.uint8)
+    n, labels, stats, cents = cv2.connectedComponentsWithStats(mask, 8)
+    comps = []  # (bbox_left, bbox_right, center_x)
+    for i in range(1, n):
+        sx, sy, sw, sh, area = stats[i]
+        if sw >= 20 and sh >= 20 and area >= 800:
+            comps.append((sx, sx + sw, sx + sw // 2))
+
+    rects = []
+    margin = max(1, int(round(tile_width * 0.03)))
+    used = set()
+    for i in range(num_tiles):
+        center = offset + i * tile_width + tile_width // 2
+        # 选择中心最接近槽位中心且未被占用的牌面连通域
+        best = None
+        best_dist = None
+        for ci, (x0c, x1c, cx) in enumerate(comps):
+            if ci in used:
+                continue
+            dist = abs(cx - center)
+            if best is None or dist < best_dist:
+                best = (x0c, x1c)
+                best_dist = dist
+                best_ci = ci
+        if best is None:
+            # 未找到牌面（如空槽位），退回槽位中心区域
+            cx0 = max(0, center - tile_width // 2)
+            x0, x1 = cx0, min(region_w, cx0 + int(tile_width * 0.8))
+        else:
+            used.add(best_ci)
+            x0 = max(0, best[0] - margin)
+            x1 = min(region_w, best[1] + margin)
+        if x1 <= x0:
+            x1 = min(region_w, x0 + 1)
+        top, bottom = _template_box(region_h, x1 - x0)
+        rects.append((x0, x1, top, bottom))
+    return rects
+
+
 def _scan_region(region_gray, num_tiles, tile_width, offset):
     """按给定分档数和偏移扫描，返回 (candidates, confs, ok)。"""
     cands = []
@@ -204,8 +251,13 @@ def recognize_tiles_from_image(img_bgr):
     if tile_candidates is None:
         return [], [], img_bgr
 
+    # 按实际牌面精确定位每个槽位（仅用于绘制识别框，间隙留在框外）
+    region_gray = tm.preprocess_tile(gray[y:y+h, x:x+w])
+    main_rects = _tile_face_rects(region_gray, len(tile_candidates), offset, tile_width)
+
     # 第二区域（摸到的牌）
     x2, y2, w2, h2 = None, None, None, None
+    second_box = None
     if len(rects) > 1:
         x2, y2, w2, h2 = rects[1]
         if x2 > x + w and abs(y2 - y) < 20:
@@ -218,25 +270,17 @@ def recognize_tiles_from_image(img_bgr):
                     tile_candidates.append(scores[:3])
                 else:
                     tile_candidates.append([])
+                rx0, rx1, top2, bottom2 = _tile_face_rects(gray2, 1, 0, w2)[0]
+                second_box = (x2 + rx0, y2 + top2, rx1 - rx0, bottom2 - top2)
 
     corrected_ids = viterbi_correct(tile_candidates)
 
-    # 构建boxes（与识别裁剪框保持一致，均为模板比例）
+    # 构建boxes：主区域按实际牌面定位，间隙留在框外；第二区域单独成框
     boxes = []
-    top_main, bottom_main = _template_box(h, tile_width)
-    box_h_main = bottom_main - top_main
-    for i, tid in enumerate(corrected_ids):
-        if i < len(corrected_ids) - 1 and i < len(tile_candidates) - 1:
-            left = x + offset + i * tile_width
-            boxes.append((left, y + top_main, tile_width, box_h_main))
-        else:
-            # 第二区域或末尾
-            if x2 is not None:
-                top2, bottom2 = _template_box(h2, w2)
-                boxes.append((x2, y2 + top2, w2, bottom2 - top2))
-            else:
-                last_left = x + offset + (len(corrected_ids)-1) * tile_width
-                boxes.append((last_left, y + top_main, tile_width, box_h_main))
+    for x0, x1, top, bottom in main_rects:
+        boxes.append((x + x0, y + top, x1 - x0, bottom - top))
+    if second_box is not None:
+        boxes.append(second_box)
 
     # 绘制调试图
     debug_img = img_bgr.copy()
