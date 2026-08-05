@@ -91,11 +91,15 @@ class RecognizeThread(QThread):
 class SelectionOverlay(QWidget):
     selection_done = pyqtSignal(int, int, int, int)
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
+    def __init__(self, screen=None):
+        super().__init__(None)
+        self._screen = screen
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setCursor(Qt.CrossCursor)
+        if screen is not None:
+            g = screen.geometry()
+            self.setGeometry(g.x(), g.y(), g.width(), g.height())
         self.showFullScreen()
 
         self.start_x = None
@@ -158,7 +162,9 @@ class SelectionOverlay(QWidget):
             h = abs(self.start_y - self.end_y)
 
             if w > 20 and h > 20:
-                self.selection_done.emit(x, y, w, h)
+                g = self._screen.geometry()
+                # 转成虚拟桌面绝对坐标，mss 按绝对坐标抓取，多屏才不会错位
+                self.selection_done.emit(g.x() + x, g.y() + y, w, h)
             else:
                 self.close()
 
@@ -482,7 +488,10 @@ class MahjongHelper(QObject):
             self.overlay.close()
             self.overlay.deleteLater()
             self.overlay = None
-        self.overlay = SelectionOverlay()
+        screen = QGuiApplication.screenAt(QCursor.pos())
+        if screen is None:
+            screen = QGuiApplication.primaryScreen()
+        self.overlay = SelectionOverlay(screen)
         self.overlay.selection_done.connect(self.on_selection_done)
         self.overlay.show()
 
