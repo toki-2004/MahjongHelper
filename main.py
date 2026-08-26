@@ -199,7 +199,7 @@ class ResultOverlay(QWidget):
         self.tile_ids = tile_ids
         self.boxes = boxes
 
-        best_idx, _ = decide_discard(tile_ids) if tile_ids else (-1, -1)
+        best_idx, suggest_info = decide_discard(tile_ids) if tile_ids else (-1, None)
 
         for i, (bx, by, bw, bh) in enumerate(boxes):
             if i >= len(tile_ids):
@@ -221,17 +221,25 @@ class ResultOverlay(QWidget):
             lbl.show()
             self.label_list.append(lbl)
 
-        # 建议打出：半透明标签贴在识别区域上方，横跨整个区域宽度
-        if best_idx >= 0 and best_idx < len(tile_ids):
+        # 建议文本：半透明标签贴在识别区域上方，横跨整个区域宽度
+        if suggest_info and suggest_info.get('effective_tiles') is not None:
             sug = QLabel(self)
-            sug.setText("建议打出：%s" % get_tile_name(tile_ids[best_idx]))
+            eff_names = " ".join("%s×%d" % (n, r) for n, r in suggest_info['effective_tiles'])
+            if best_idx >= 0 and best_idx < len(tile_ids):
+                head = "建议打出：%s（打出后 %d 向听，有效进张 %d 张）" % (
+                    get_tile_name(tile_ids[best_idx]),
+                    suggest_info['shanten'], suggest_info['effective'])
+            else:
+                head = "当前 %d 向听，有效进张 %d 张" % (
+                    suggest_info['shanten'], suggest_info['effective'])
+            sug.setText("%s\n%s" % (head, eff_names))
             sug.setStyleSheet(
                 "color: yellow; background-color: rgba(0,0,0,150);"
                 "font-weight: bold; padding: 2px;")
-            sug.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            sug.setWordWrap(False)
-            sug.setGeometry(self.margin, self.margin - 24,
-                            self.width() - 2 * self.margin, 22)
+            sug.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+            sug.setWordWrap(True)
+            sug.setGeometry(self.margin, self.margin - 46,
+                            self.width() - 2 * self.margin, 44)
             sug.setAttribute(Qt.WA_TransparentForMouseEvents, True)
             sug.show()
             self.suggestion_label = sug
