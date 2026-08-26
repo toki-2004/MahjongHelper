@@ -221,17 +221,17 @@ class ResultOverlay(QWidget):
             lbl.show()
             self.label_list.append(lbl)
 
-        # 建议打出：半透明标签贴在对应识别框正上方，宽度不超过识别框
-        if best_idx >= 0 and best_idx < len(boxes) and best_idx < len(tile_ids):
-            bx, by, bw, bh = boxes[best_idx]
+        # 建议打出：半透明标签贴在识别区域上方，横跨整个区域宽度
+        if best_idx >= 0 and best_idx < len(tile_ids):
             sug = QLabel(self)
-            sug.setText("打 %s" % get_tile_name(tile_ids[best_idx]))
+            sug.setText("建议打出：%s" % get_tile_name(tile_ids[best_idx]))
             sug.setStyleSheet(
                 "color: yellow; background-color: rgba(0,0,0,150);"
                 "font-weight: bold; padding: 2px;")
-            sug.setAlignment(Qt.AlignCenter)
+            sug.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             sug.setWordWrap(False)
-            sug.setGeometry(bx + self.margin, by + self.margin - 24, bw, 22)
+            sug.setGeometry(self.margin, self.margin - 24,
+                            self.width() - 2 * self.margin, 22)
             sug.setAttribute(Qt.WA_TransparentForMouseEvents, True)
             sug.show()
             self.suggestion_label = sug
