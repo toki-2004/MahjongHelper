@@ -24,7 +24,11 @@ for i in range(18, 27):
     ID_TO_SUIT_VAL[i] = (2, i - 17)         # 筒
 for i in range(27, 34):
     ID_TO_SUIT_VAL[i] = (3, 0)              # 字牌
-VAL_TO_ID = {v: k for k, v in ID_TO_SUIT_VAL.items()}
+ID_TO_SUIT_VAL[34] = (0, 5)                 # 红5万
+ID_TO_SUIT_VAL[35] = (1, 5)                 # 红5索
+ID_TO_SUIT_VAL[36] = (2, 5)                 # 红5筒
+TOTAL_TILE_TYPES = 37
+VAL_TO_ID = {v: k for k, v in ID_TO_SUIT_VAL.items() if k < 34}
 
 
 def preprocess_tile(img):
@@ -97,10 +101,44 @@ def _align_image(new, ref, max_shift=3):
     return aligned
 
 
+def _corr_bgr(a, b):
+    """BGR 多通道归一化相关（等价 CCOEFF_NORMED 向量版本）。"""
+    pa = a.astype(np.float32) - a.astype(np.float32).mean()
+    qa = b.astype(np.float32) - b.astype(np.float32).mean()
+    denom = np.linalg.norm(pa) * np.linalg.norm(qa)
+    return float((pa * qa).sum() / (denom + 1e-9))
+
+
+def _pick_representative(refs):
+    """Pick one real sample as the class template instead of averaging.
+
+    Samples are shift-aligned to the first one, then the sample closest to
+    the per-pixel median image is chosen. This keeps the template sharp and
+    never produces the blurry average the old pipeline suffered from.
+    """
+    if not refs:
+        return None
+    if len(refs) == 1:
+        return refs[0]
+    base = refs[0]
+    aligned = [base]
+    for s in refs[1:]:
+        a = _align_image(s, base)
+        aligned.append(a if a is not None else s)
+    stack = np.stack(aligned).astype(np.float32)
+    med = np.median(stack, axis=0)
+    best, best_corr = None, -1.0
+    for s in aligned:
+        c = _corr_bgr(s, med)
+        if c > best_corr:
+            best_corr, best = c, s
+    return best
+
+
 def load_templates():
     """从 TEMPLATE_PATH 加载 34 张模板并预处理，构建匹配矩阵。"""
     templates = []
-    for i in range(34):
+    for i in range(TOTAL_TILE_TYPES):
         path = os.path.join(TEMPLATE_PATH, f"{i}.png")
         img = None
         if os.path.exists(path):
@@ -110,7 +148,8 @@ def load_templates():
                 if g is not None:
                     img = cv2.cvtColor(g, cv2.COLOR_GRAY2BGR)
         if img is not None:
-            templates.append((i, _resize_to_template(preprocess_tile(img))))
+            # 模板文件保存时已预处理，加载不再二次处理，避免变亮/过度增强
+            templates.append((i, _resize_to_template(img)))
         else:
             if i not in _missing_warned:
                 print(f"模板缺失：{i}.png（当前为占位，等待采集）")
@@ -141,7 +180,8 @@ def load_samples():
         for p in paths:
             img = cv2.imread(os.path.join(base, d, p), cv2.IMREAD_COLOR)
             if img is not None:
-                imgs.append(_resize_to_template(preprocess_tile(img)))
+                # 样本文件保存时已预处理，加载不再二次处理
+                imgs.append(_resize_to_template(img))
         if imgs:
             SAMPLES[tid] = imgs
 
@@ -211,7 +251,7 @@ def update_template(tile_id, img):
     global templates
     path = os.path.join(TEMPLATE_PATH, f"{tile_id}.png")
     os.makedirs(TEMPLATE_PATH, exist_ok=True)
-    new = _resize_to_template(preprocess_tile(_to_bgr(img)))
+    new = _resize_to_template(_to_bgr(img))
     n = _sample_counts.get(tile_id, 0)
     old = cv2.imread(path, cv2.IMREAD_COLOR) if n > 0 and os.path.exists(path) else None
     if old is not None:
@@ -236,42 +276,70 @@ def update_template(tile_id, img):
 
 def build_template_library(origin_dir="templates_origin", samples_by_id=None, target_dir=None):
     """
-    构建模板库：每张牌取 原始模板 + 全部标记样本 的均值，写入 target_dir。
+    构建模板库：每张牌从 原始模板 + 全部标记样本 中挑选一张代表样本
+    （不叠化平均，保持锐利细节），写入 target_dir。
     samples_by_id: {tile_id: [BGR ROI, ...]}
     """
     target_dir = target_dir or TEMPLATE_PATH
     os.makedirs(target_dir, exist_ok=True)
     built = []
-    for i in range(34):
+    for i in range(TOTAL_TILE_TYPES):
         refs = []
-        op = os.path.join(origin_dir, f"{i}.png")
-        if os.path.exists(op):
-            img = cv2.imread(op, cv2.IMREAD_COLOR)
-            if img is None:
-                g = cv2.imread(op, cv2.IMREAD_GRAYSCALE)
-                img = cv2.cvtColor(g, cv2.COLOR_GRAY2BGR) if g is not None else None
-            if img is not None:
-                refs.append(_resize_to_template(preprocess_tile(img)))
+        if origin_dir:
+            op = os.path.join(origin_dir, f"{i}.png")
+            if os.path.exists(op):
+                img = cv2.imread(op, cv2.IMREAD_COLOR)
+                if img is None:
+                    g = cv2.imread(op, cv2.IMREAD_GRAYSCALE)
+                    img = cv2.cvtColor(g, cv2.COLOR_GRAY2BGR) if g is not None else None
+                if img is not None:
+                    refs.append(_resize_to_template(img))
         if samples_by_id and i in samples_by_id:
             for s in samples_by_id[i]:
                 if s is not None and s.size > 0:
-                    refs.append(_resize_to_template(preprocess_tile(_to_bgr(s))))
+                    refs.append(_resize_to_template(_to_bgr(s)))
         if refs:
-            # 以第一张为基准，其余样本平移配准后再平均，避免重影
-            base = refs[0]
-            aligned_refs = [base]
-            for s in refs[1:]:
-                a = _align_image(s, base)
-                aligned_refs.append(a if a is not None else s)
-            avg = np.mean(np.stack(aligned_refs), axis=0).astype(np.uint8)
-            cv2.imwrite(os.path.join(target_dir, f"{i}.png"), avg)
+            best = _pick_representative(refs)
+            cv2.imwrite(os.path.join(target_dir, f"{i}.png"), best)
             built.append((i, len(refs)))
     return built
+
+
+def rebuild_templates_from_samples(target_dir=None):
+    """
+    From templates/samples/{tile_id}/*.png rebuild templates/{tile_id}.png
+    without averaging. Returns [(tile_id, sample_count), ...].
+    """
+    target_dir = target_dir or TEMPLATE_PATH
+    base = os.path.join(TEMPLATE_PATH, "samples")
+    if not os.path.isdir(base):
+        return []
+    samples_by_id = {}
+    for d in sorted(os.listdir(base)):
+        if not d.isdigit():
+            continue
+        tid = int(d)
+        paths = sorted(f for f in os.listdir(os.path.join(base, d)) if f.endswith(".png"))
+        imgs = []
+        for p in paths:
+            img = cv2.imread(os.path.join(base, d, p), cv2.IMREAD_COLOR)
+            if img is not None:
+                imgs.append(_resize_to_template(img))
+        if imgs:
+            samples_by_id[tid] = imgs
+    return build_template_library(origin_dir=None, samples_by_id=samples_by_id,
+                                  target_dir=target_dir)
 
 
 def get_tile_name(tile_id):
     if tile_id < 0:
         return "?"
+    if tile_id == 34:
+        return "红5w"
+    if tile_id == 35:
+        return "红5s"
+    if tile_id == 36:
+        return "红5p"
     suit, val = ID_TO_SUIT_VAL.get(tile_id, (3, 0))
     suit_map = {0: "w", 1: "s", 2: "p", 3: ""}
     if suit == 3:

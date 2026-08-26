@@ -14,6 +14,9 @@ debug_output/
 # 用户配置文件（含隐私信息）
 config.json
 
+# 本地测试截图
+input/
+
 # 日志文件
 *.log
 

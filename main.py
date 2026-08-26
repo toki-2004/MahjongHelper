@@ -37,7 +37,7 @@ TEMPLATE_PATH = resource_path("templates")
 # 修改 template_manager 的模板路径
 import template_manager
 template_manager.TEMPLATE_PATH = TEMPLATE_PATH
-from template_manager import load_templates, templates, ID_TO_SUIT_VAL, get_tile_name, update_template
+from template_manager import load_templates, templates, get_tile_name
 logger.info(f"模板路径: {TEMPLATE_PATH}")
 templates = load_templates()
 logger.info(f"模板加载完成，共 {len(templates)} 张")
@@ -48,7 +48,7 @@ from logic import decide_discard
 
 # ================== 识别线程 ==================
 class RecognizeThread(QThread):
-    result_ready = pyqtSignal(list, list, np.ndarray, dict)  # ids, boxes, debug_img, rois
+    result_ready = pyqtSignal(list, list, np.ndarray)  # ids, boxes, debug_img
 
     def __init__(self, region):
         super().__init__()
@@ -69,22 +69,13 @@ class RecognizeThread(QThread):
             ids, boxes, debug_img = recognize_tiles_from_image(img_bgr)
             logger.info(f"识别完成，得到 {len(ids)} 张牌")
 
-            # 提取 ROI
-            rois = {}
-            for i, (bx, by, bw, bh) in enumerate(boxes):
-                if i < len(ids):
-                    roi = img_bgr[by:by+bh, bx:bx+bw]
-                    if roi.size > 0:
-                        # 保存彩色 ROI，模板采集保留花色颜色
-                        rois[i] = roi
-
             elapsed = time.time() - start_time
             logger.info(f"识别总耗时: {elapsed:.2f}秒")
-            self.result_ready.emit(ids, boxes, debug_img, rois)
+            self.result_ready.emit(ids, boxes, debug_img)
 
         except Exception as e:
             logger.error(f"识别错误: {e}", exc_info=True)
-            self.result_ready.emit([], [], None, {})
+            self.result_ready.emit([], [], None)
 
 
 # ================== 界面类 ==================
@@ -193,18 +184,13 @@ class ResultOverlay(QWidget):
         self.tile_ids = []
         self.boxes = []
         self.helper = helper
-        self.tile_names = [f"{i} {get_tile_name(i)}" for i in range(34)]
 
         self.label_list = []
-        self.combo_list = []
 
     def update_result(self, tile_ids, boxes):
         for lbl in self.label_list:
             lbl.deleteLater()
-        for cb in self.combo_list:
-            cb.deleteLater()
         self.label_list.clear()
-        self.combo_list.clear()
 
         self.tile_ids = tile_ids
         self.boxes = boxes
@@ -230,35 +216,6 @@ class ResultOverlay(QWidget):
             lbl.setAttribute(Qt.WA_TransparentForMouseEvents, True)
             lbl.show()
             self.label_list.append(lbl)
-
-            cb = QComboBox(self)
-            # 首项为占位项：下拉默认不选中任何牌，保证选择任意牌（含 1w）都会触发修正
-            cb.addItems(["(选择修正)"] + self.tile_names)
-            cb.setGeometry(bx + self.margin, by + self.margin - 25, bw, 22)
-            cb.setAttribute(Qt.WA_TransparentForMouseEvents, False)
-            cb.currentIndexChanged.connect(lambda idx, i=i: self.on_combo_changed(i, idx))
-            cb.show()
-            self.combo_list.append(cb)
-
-    def on_combo_changed(self, index, selected_index):
-        if index >= len(self.tile_ids):
-            return
-        if selected_index <= 0:
-            # 占位项“(选择修正)”，未选择具体牌
-            return
-        correct_id = selected_index - 1
-        gray_roi = self.helper.current_rois.get(index)
-        if gray_roi is None:
-            QMessageBox.information(self, "提示", "该牌的图像数据不存在，请重新识别。")
-            return
-        success = update_template(correct_id, gray_roi)
-        if success:
-            QMessageBox.information(self, "成功", f"模板 {get_tile_name(correct_id)} 已更新！")
-            if self.helper:
-                # 更新模板后自动执行一次 F1 刷新，立即验证效果
-                self.helper.refresh_recognition()
-        else:
-            QMessageBox.warning(self, "失败", "模板更新失败。")
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
@@ -346,10 +303,20 @@ class MainUI(QWidget):
         if ids:
             names = [get_tile_name(i) for i in ids]
             self.hand_display.setText(" ".join(names))
-            best_idx, score = decide_discard(ids)
+            best_idx, info = decide_discard(ids)
             if best_idx != -1:
                 best_tile = get_tile_name(ids[best_idx])
-                self.suggestion_display.setText(f"建议打出：{best_tile}  (得分:{score})")
+                if info:
+                    eff_names = " ".join("%s×%d" % (n, r) for n, r in info['effective_tiles'][:8])
+                    self.suggestion_display.setText(
+                        f"建议打出：{best_tile}（打出后 {info['shanten']} 向听，"
+                        f"有效进张 {info['effective']} 张）\n{eff_names}")
+                else:
+                    self.suggestion_display.setText(f"建议打出：{best_tile}")
+            elif info:
+                eff_names = " ".join("%s×%d" % (n, r) for n, r in info['effective_tiles'][:8])
+                self.suggestion_display.setText(
+                    f"当前 {info['shanten']} 向听，有效进张 {info['effective']} 张\n{eff_names}")
             else:
                 self.suggestion_display.setText("无法决策")
             self.status_label.setText(f"已识别 {len(ids)} 张牌")
@@ -391,7 +358,6 @@ class MahjongHelper(QObject):
         self.current_ids = []
         self.current_boxes = []
         self.current_debug_img = None
-        self.current_rois = {}
         self.main_ui = None
         self.rec_thread = None
 
@@ -538,12 +504,11 @@ class MahjongHelper(QObject):
         self.rec_thread.result_ready.connect(self.on_recognition_done)
         self.rec_thread.start()
 
-    def on_recognition_done(self, ids, boxes, debug_img, rois):
+    def on_recognition_done(self, ids, boxes, debug_img):
         logger.info(f"收到识别结果，牌数: {len(ids)}")
         self.current_ids = ids
         self.current_boxes = boxes
         self.current_debug_img = debug_img
-        self.current_rois = rois
 
         if self.capture_region:
             x, y, w, h = self.capture_region
