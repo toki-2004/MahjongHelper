@@ -135,6 +135,7 @@ template_manager.py  模板加载、矩阵预计算、样本管理、模板重�
 logic.py             日麻切牌建议（向听数 + 有效进张 + 红5 保留）
 debug_capture.py     截图工具 GUI：自定义热键与保存目录，F2 全屏 / F3 框选保存
 templates/           37 张牌面模板（0.png ~ 36.png，含 34~36 红5万/索/筒）
+template_packs/      模板包仓库：按游戏/皮肤组织（如 雀魂默认/templates），供不同牌面皮肤切换
 MahjongHelper.spec   PyInstaller 打包配置
 ```
 
