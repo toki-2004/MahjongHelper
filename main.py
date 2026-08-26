@@ -186,11 +186,15 @@ class ResultOverlay(QWidget):
         self.helper = helper
 
         self.label_list = []
+        self.suggestion_label = None
 
     def update_result(self, tile_ids, boxes):
         for lbl in self.label_list:
             lbl.deleteLater()
         self.label_list.clear()
+        if self.suggestion_label is not None:
+            self.suggestion_label.deleteLater()
+            self.suggestion_label = None
 
         self.tile_ids = tile_ids
         self.boxes = boxes
@@ -216,6 +220,21 @@ class ResultOverlay(QWidget):
             lbl.setAttribute(Qt.WA_TransparentForMouseEvents, True)
             lbl.show()
             self.label_list.append(lbl)
+
+        # 建议打出：半透明标签贴在对应识别框正上方，宽度不超过识别框
+        if best_idx >= 0 and best_idx < len(boxes) and best_idx < len(tile_ids):
+            bx, by, bw, bh = boxes[best_idx]
+            sug = QLabel(self)
+            sug.setText("打 %s" % get_tile_name(tile_ids[best_idx]))
+            sug.setStyleSheet(
+                "color: yellow; background-color: rgba(0,0,0,150);"
+                "font-weight: bold; padding: 2px;")
+            sug.setAlignment(Qt.AlignCenter)
+            sug.setWordWrap(False)
+            sug.setGeometry(bx + self.margin, by + self.margin - 24, bw, 22)
+            sug.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            sug.show()
+            self.suggestion_label = sug
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
