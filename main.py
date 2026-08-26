@@ -232,14 +232,14 @@ class ResultOverlay(QWidget):
             else:
                 head = "当前 %d 向听，有效进张 %d 张" % (
                     suggest_info['shanten'], suggest_info['effective'])
-            sug.setText("%s\n%s" % (head, eff_names))
+            sug.setText("%s %s" % (head, eff_names))
             sug.setStyleSheet(
                 "color: yellow; background-color: rgba(0,0,0,150);"
                 "font-weight: bold; padding: 2px;")
             sug.setAlignment(Qt.AlignLeft | Qt.AlignTop)
-            sug.setWordWrap(True)
-            sug.setGeometry(self.margin, self.margin - 46,
-                            self.width() - 2 * self.margin, 44)
+            sug.setWordWrap(False)
+            sug.setGeometry(self.margin, self.margin - 24,
+                            self.width() - 2 * self.margin, 22)
             sug.setAttribute(Qt.WA_TransparentForMouseEvents, True)
             sug.show()
             self.suggestion_label = sug
