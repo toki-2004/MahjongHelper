@@ -163,9 +163,14 @@ def _shanten_normal(counts):
 
 
 def _shanten_chiitoi(counts):
-    """七对子向听：6 - 对子数（13 张）。"""
+    """七对子向听：6 - 对子数 + max(0, 7 - 种类数)（13 张）。
+
+    种类不足 7 种（存在多张刻子牌型）时单靠对子数会低估向听，
+    需补种类数修正项，否则可能给出偏乐观的七对建议。
+    """
     pairs = sum(1 for x in counts if x >= 2)
-    return 6 - pairs
+    kinds = sum(1 for x in counts if x >= 1)
+    return 6 - pairs + max(0, 7 - kinds)
 
 
 def _shanten_kokushi(counts):

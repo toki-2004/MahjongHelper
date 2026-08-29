@@ -287,13 +287,17 @@ class SettingDialog(QDialog):
             with open(CONFIG_FILE, 'r') as f:
                 config = json.load(f)
                 self.mode_combo.setCurrentIndex(config.get('mode', 0))
-        except:
-            pass
+        except Exception as e:
+            # 配置损坏不再静默：留痕便于发现"设置总丢失"类问题
+            logger.warning(f"读取配置失败，使用默认值: {e}")
 
     def save_config(self):
         config = {'mode': self.mode_combo.currentIndex()}
-        with open(CONFIG_FILE, 'w') as f:
+        # 临时文件 + os.replace 原子替换，避免中途崩溃留下坏档
+        tmp = CONFIG_FILE + '.tmp'
+        with open(tmp, 'w') as f:
             json.dump(config, f)
+        os.replace(tmp, CONFIG_FILE)
         return config
 
 
@@ -569,6 +573,9 @@ class MahjongHelper(QObject):
     def exit_app(self):
         if self.timer:
             self.timer.stop()
+        # 等识别线程退出，避免 "QThread: Destroyed while thread is still running" 崩溃
+        if getattr(self, 'rec_thread', None) is not None and self.rec_thread.isRunning():
+            self.rec_thread.wait(2000)
         QApplication.quit()
 
 

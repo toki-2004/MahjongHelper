@@ -269,7 +269,10 @@ def update_template(tile_id, img):
             avg = (old.astype(np.float32) * n + new.astype(np.float32)) / (n + 1)
             new = np.clip(avg, 0, 255).astype(np.uint8)
     _sample_counts[tile_id] = n + 1
-    cv2.imwrite(path, new)
+    # imencode+tofile 代替 imwrite：OpenCV 的 imwrite 在中文路径下会静默失败
+    ok, buf = cv2.imencode(".png", new)
+    if ok:
+        buf.tofile(path)
     templates = load_templates()
     return True
 
@@ -300,7 +303,10 @@ def build_template_library(origin_dir="templates_origin", samples_by_id=None, ta
                     refs.append(_resize_to_template(_to_bgr(s)))
         if refs:
             best = _pick_representative(refs)
-            cv2.imwrite(os.path.join(target_dir, f"{i}.png"), best)
+            # 同上：中文路径下 imwrite 会静默失败
+            ok, buf = cv2.imencode(".png", best)
+            if ok:
+                buf.tofile(os.path.join(target_dir, f"{i}.png"))
             built.append((i, len(refs)))
     return built
 

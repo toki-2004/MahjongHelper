@@ -266,7 +266,12 @@ class CaptureWindow(QMainWindow):
                 skipped += 1
                 continue
             path = _next_sample_path(tile_id)
-            cv2.imwrite(path, _process_roi(roi))
+            # 同上：中文路径下 imwrite 会静默失败
+            ok, buf = cv2.imencode(".png", _process_roi(roi))
+            if not ok:
+                skipped += 1
+                continue
+            buf.tofile(path)
             saved.append((tile_id, path))
         if saved:
             QMessageBox.information(

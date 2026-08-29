@@ -31,3 +31,5 @@ input/
 venv/
 env/
 HANDOVER.md
+# 采集工具配置（含本机路径）
+capture_config.json
