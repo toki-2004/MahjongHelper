@@ -8,6 +8,7 @@
 """
 
 import os
+import sys
 
 import cv2
 import numpy as np
@@ -16,7 +17,12 @@ import template_manager as tm
 from template_manager import get_tile_name
 from tile_detect import detect_tile_boxes
 
-OUTPUT_PATH = "debug_output"
+# 调试输出与数据文件同源：打包版以 exe 目录为基准（管理员启动 cwd 是 System32）
+if getattr(sys, "frozen", False):
+    _BASE_DIR = os.path.dirname(os.path.abspath(sys.executable))
+else:
+    _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+OUTPUT_PATH = os.path.join(_BASE_DIR, "debug_output")
 os.makedirs(OUTPUT_PATH, exist_ok=True)
 
 MIN_CONF = 0.45    # 接受识别的最低置信度

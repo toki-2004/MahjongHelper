@@ -11,8 +11,14 @@ import numpy as np
 import mss
 import keyboard
 
+# ========== 数据目录：打包版用 exe 所在目录（管理员启动时 cwd 是 System32） ==========
+if getattr(sys, "frozen", False):
+    BASE_DIR = os.path.dirname(os.path.abspath(sys.executable))
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # ========== 日志配置 ==========
-LOG_FILE = os.path.join(os.getcwd(), "mahjong_helper.log")
+LOG_FILE = os.path.join(BASE_DIR, "mahjong_helper.log")
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -31,7 +37,7 @@ def resource_path(relative_path):
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
 
-CONFIG_FILE = os.path.join(os.getcwd(), "config.json")
+CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 TEMPLATE_PATH = resource_path("templates")
 
 # 修改 template_manager 的模板路径
@@ -41,6 +47,10 @@ from template_manager import load_templates, templates, get_tile_name
 logger.info(f"模板路径: {TEMPLATE_PATH}")
 templates = load_templates()
 logger.info(f"模板加载完成，共 {len(templates)} 张")
+# 样本级匹配(kNN)数据同样依赖 TEMPLATE_PATH，改路径后必须重载，
+# 否则打包版 EXEMPLAR_MATRIX 恒为 None、识别静默退化为单模板匹配
+template_manager.load_samples()
+logger.info(f"样本加载完成：EXEMPLAR_MATRIX={'就绪' if getattr(template_manager, 'EXEMPLAR_MATRIX', None) is not None else '无样本'}")
 
 from vision import recognize_tiles_from_image
 from logic import decide_discard
