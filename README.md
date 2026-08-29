@@ -1,5 +1,7 @@
 # 🀄 MahjongHelper
 
+> **语言：** 简体中文 | [English](README.en.md)
+
 基于屏幕实时识别的麻将辅助工具：框选屏幕中的手牌区域，自动识别牌面并给出最优切牌建议。支持手动框选、定时自动刷新；模板由配套采集工具（template_capture.py）建立，识别精度随样本积累逐步提升。
 
 ![GitHub release (latest by date)](https://img.shields.io/github/v/release/toki-2004/MahjongHelper)
